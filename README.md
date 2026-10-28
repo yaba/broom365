@@ -82,6 +82,8 @@ set one straight away (see *Accounts*). The image contains Microsoft's ODBC driv
 registry rather than publishing it. Start from your own base image with `--build-arg BASE_IMAGE=...` (Python 3.11+; the Dockerfile installs the Microsoft ODBC driver when the base lacks it, so building
 accepts Microsoft's licence terms for that driver).
 
+`docker-compose.prod.yml` is the minimal stack for production (for example in Portainer): only Broom365, with `BROOM_IMAGE`, `DATABASE_URL` and `BROOM_KEY` as variables.
+
 SQL Server is optional. Without `DATABASE_URL` Broom365 keeps a SQLite file (and the sessions) in `/app/instance`; mount a volume
 there so they survive a restart. `docker compose up --build` does exactly that (volume `broom-data`) and reads `DATABASE_URL`
 from `.env` when you have an external server (see `.env.example.docker`). For a throw-away SQL Server while developing, add

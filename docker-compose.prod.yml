@@ -1,0 +1,23 @@
+# Broom365 in production: the image on its own, with an external SQL Server (or SQLite in a volume when DATABASE_URL is empty).
+# Paste it into a Portainer stack or run `docker compose -f docker-compose.prod.yml up -d`.
+#
+# Set these variables (Portainer: "Environment variables" of the stack, or its secrets; plain compose: a .env file):
+#   BROOM_IMAGE   the image to run, e.g. yourname/yourrepo:broom365-1.0 (log in to the registry first when it is private)
+#   DATABASE_URL  mssql+pyodbc://USER:PASSWORD@HOST:1433/DATABASE?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+#   BROOM_KEY     any long random string; encrypts the Entra client secret stored in the database. Keep it: changing it
+#                 means entering that secret again in Settings.
+# The first sign-in is `admin` with an empty password; set a real one straight away (see the README).
+services:
+  broom365:
+    image: ${BROOM_IMAGE:?set BROOM_IMAGE}
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-}
+      BROOM_KEY: ${BROOM_KEY:?set BROOM_KEY}
+    volumes:
+      - broom-data:/app/instance     # sessions, and the SQLite file when DATABASE_URL is empty
+    restart: unless-stopped
+
+volumes:
+  broom-data:
