@@ -23,7 +23,7 @@ def test_odbc_connection_string_from_a_url():
 
 
 def test_odbc_connect_passthrough_and_url_encoded_password():
-    assert odbc_connection_string("mssql+pyodbc:///?odbc_connect=DRIVER%3D%7BX%7D%3BSERVER%3Dh") == "DRIVER={X};SERVER=h"
+    assert odbc_connection_string("mssql+pyodbc:///?odbc_connect=DRIVER%3D%7BX%7D%3BSERVER%3Dh%3BEncrypt%3Dno") == "DRIVER={X};SERVER=h;Encrypt=no"
     assert "PWD={p@ss}" in odbc_connection_string("mssql+pyodbc://u:p%40ss@h/db")
 
 
@@ -127,3 +127,37 @@ def test_a_bad_url_error_never_repeats_the_password():
         with pytest.raises(ValueError) as e:
             odbc_connection_string(bad)
         assert "SECRETpw" not in str(e.value)
+
+
+def test_without_encryption_options_the_server_certificate_is_accepted_so_no_certificate_is_needed():
+    assert odbc_connection_string("mssql+pyodbc://u:p@h:1433/db").endswith(";TrustServerCertificate=yes")
+    assert odbc_connection_string("mssql+pyodbc:///?odbc_connect=DRIVER%3D%7BX%7D%3BSERVER%3Dh").endswith("SERVER=h;TrustServerCertificate=yes")
+    assert odbc_connection_string("mssql+pyodbc:///?odbc_connect=DRIVER={X};SERVER=h;PWD=p;").endswith("PWD=p;TrustServerCertificate=yes")
+    # an explicit choice is never overridden
+    assert "TrustServerCertificate=no" in odbc_connection_string("mssql+pyodbc://u:p@h/db?Encrypt=yes&TrustServerCertificate=no")
+    assert "Encrypt=no" in odbc_connection_string("mssql+pyodbc://u:p@h/db?Encrypt=no") and "TrustServerCertificate" not in odbc_connection_string("mssql+pyodbc://u:p@h/db?Encrypt=no")
+    assert odbc_connection_string("mssql+pyodbc:///?odbc_connect=DRIVER={X};SERVER=h;encrypt=no").endswith("encrypt=no")
+
+
+def test_any_odbc_option_can_be_given_and_overrides_the_generated_parts():
+    s = odbc_connection_string("mssql+pyodbc://u:p@db.local:1433/broom?driver=ODBC+Driver+17+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no"
+                               "&ApplicationIntent=ReadOnly&MultiSubnetFailover=Yes&Connection+Timeout=15")
+    assert s == ("DRIVER={ODBC Driver 17 for SQL Server};SERVER=db.local,1433;DATABASE=broom;UID=u;PWD={p};Encrypt=yes;"
+                 "TrustServerCertificate=no;ApplicationIntent=ReadOnly;MultiSubnetFailover=Yes;Connection Timeout=15")
+    assert odbc_connection_string("mssql+pyodbc://u:p@h/db?Driver=FreeTDS").startswith("DRIVER={FreeTDS};")
+    assert "SERVER=other,1444" in odbc_connection_string("mssql+pyodbc://u:p@h/db?Server=other,1444")        # an option replaces a generated part
+
+
+def test_instances_windows_authentication_and_azure_ad_need_no_user_or_password():
+    s = odbc_connection_string("mssql+pyodbc://sqlhost%5CSQLEXPRESS/db?Trusted_Connection=yes")
+    assert "SERVER=sqlhost\\SQLEXPRESS;" in s and "UID" not in s and "PWD" not in s and "Trusted_Connection=yes" in s
+    s = odbc_connection_string("mssql+pyodbc://app%40tenant.com:pw@x.database.windows.net:1433/db?Authentication=ActiveDirectoryPassword&Encrypt=yes")
+    assert "UID=app@tenant.com;PWD={pw};Authentication=ActiveDirectoryPassword;Encrypt=yes" in s and "TrustServerCertificate" not in s
+
+
+def test_values_with_semicolons_are_braced_and_a_dsn_keeps_its_own_encryption_settings():
+    assert "WSID={a;b}" in odbc_connection_string("mssql+pyodbc://u:p@h/db?WSID=a%3Bb")
+    assert odbc_connection_string("mssql+pyodbc:///?odbc_connect=DSN=prod;UID=u;PWD=p") == "DSN=prod;UID=u;PWD=p"
+    assert "TrustServerCertificate" not in odbc_connection_string("mssql+pyodbc:///?odbc_connect=DSN%3Dprod")
+    raw = odbc_connection_string("mssql+pyodbc:///?odbc_connect=DRIVER={ODBC+Driver+18+for+SQL+Server};SERVER=h,1981;DATABASE=d;UID=u;PWD=p#1;Encrypt=no")
+    assert raw == "DRIVER={ODBC Driver 18 for SQL Server};SERVER=h,1981;DATABASE=d;UID=u;PWD=p#1;Encrypt=no"      # '#' is not cut off

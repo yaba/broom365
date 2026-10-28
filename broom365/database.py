@@ -32,11 +32,37 @@ def sqlite_path(url: str) -> str:
     return url
 
 
+_ENCRYPTION_OPTION = re.compile(r"(^|;)\s*(encrypt|trustservercertificate|dsn|filedsn)\s*=", re.I)
+
+
+def _default_trust(connection_string: str) -> str:
+    """Driver 18 encrypts by default and rejects a self-signed server certificate. Unless the connection string already says how to
+    treat encryption (`Encrypt` or `TrustServerCertificate`) or points to a data source (`DSN`, which carries its own settings),
+    keep the connection encrypted but accept the server's certificate, so no certificate has to be configured.
+    Write `Encrypt=yes;TrustServerCertificate=no` to require a trusted certificate, or `Encrypt=no` to turn encryption off."""
+    if _ENCRYPTION_OPTION.search(connection_string):
+        return connection_string
+    return connection_string.rstrip(";") + ";TrustServerCertificate=yes"
+
+
+def _braced(value: str) -> str:
+    """An ODBC value that contains `;` (or a stray brace) must be wrapped in braces, with `}` doubled; an already braced value is kept."""
+    if value.startswith("{") and value.endswith("}"):
+        return value
+    return "{" + value.replace("}", "}}") + "}" if any(c in value for c in ";{}") else value
+
+
 _URL_TAIL = re.compile(r"([^/?#]*)(/[^?#]*)?(\?.*)?$", re.S)
 
 
 def odbc_connection_string(url: str) -> str:
-    """Turn a SQLAlchemy-style `mssql+pyodbc://` URL into an ODBC connection string.
+    """Turn a SQLAlchemy-style `mssql+pyodbc://` URL into an ODBC connection string. Any ODBC option can be given:
+
+    * `mssql+pyodbc://user:password@host[:port][/database][?Option=value&...]`: every query option is passed through as written
+      (`driver=...` picks the driver, `Encrypt`, `TrustServerCertificate`, `ApplicationIntent`, `MultiSubnetFailover`, `Authentication`,
+      `Trusted_Connection`...); an option with the name of a generated part (`Server`, `Database`, `UID`, `PWD`) replaces it. The host may be
+      `host\\instance` (written `host%5Cinstance`), and the user and password are optional (`Trusted_Connection=yes`, `Authentication=...`).
+    * `mssql+pyodbc:///?odbc_connect=<a complete ODBC connection string>`: used as is.
 
     The credentials end at the LAST `@`, so a password may contain `@`, `/`, `?`, `#` or `:` even when it is not percent-encoded
     (percent-encoded characters are decoded). Errors never repeat any part of the URL, because it holds the password.
@@ -44,10 +70,10 @@ def odbc_connection_string(url: str) -> str:
     scheme, sep, rest = url.partition("://")
     if not sep:
         raise ValueError("DATABASE_URL must look like mssql+pyodbc://user:password@host:1433/database?driver=...")
-    if "odbc_connect=" in rest:
-        query = dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
-        if "odbc_connect" in query:
-            return query["odbc_connect"]
+    raw_query = rest.partition("?")[2] if "odbc_connect=" in rest.lower() else ""
+    for key, value in parse_qsl(raw_query, keep_blank_values=True):
+        if key.lower() == "odbc_connect":
+            return _default_trust(value)
     userinfo, at, tail = rest.rpartition("@")
     if not at:
         userinfo, tail = "", rest
@@ -59,17 +85,20 @@ def odbc_connection_string(url: str) -> str:
     elif not port.isdigit():
         raise ValueError("DATABASE_URL has a port that is not a number (check the host part; a password with special characters "
                          "such as # / ? @ : % is fine, but a literal % must be written %25)")
-    query = dict(parse_qsl(query_text, keep_blank_values=True))
-    driver = query.pop("driver", "ODBC Driver 18 for SQL Server")
-    out = [f"DRIVER={{{driver}}}", f"SERVER={(host or 'localhost')},{port}" if port else f"SERVER={host or 'localhost'}"]
+    host = unquote(host) or "localhost"
+    parts: dict[str, str] = {"DRIVER": "{ODBC Driver 18 for SQL Server}", "SERVER": f"{host},{port}" if port else host}
     if path.strip("/"):
-        out.append(f"DATABASE={unquote(path.strip('/'))}")
+        parts["DATABASE"] = _braced(unquote(path.strip("/")))
     if at:
         user, _, password = userinfo.partition(":")
-        out.append(f"UID={unquote(user)}")
-        out.append(f"PWD={{{unquote(password).replace('}', '}}')}}}")  # braces keep ; and = in a password safe
-    out.extend(f"{k}={v}" for k, v in query.items())
-    return ";".join(out)
+        parts["UID"] = _braced(unquote(user))
+        parts["PWD"] = "{" + unquote(password).replace("}", "}}") + "}"        # braces keep ; and = in a password safe
+    shown = {k: k for k in parts}                  # option name as it is written in the result: generated ones in capitals, the rest as given
+    for key, value in parse_qsl(query_text, keep_blank_values=True):
+        name = key.upper()
+        shown.setdefault(name, key)
+        parts[name] = "{" + value + "}" if name == "DRIVER" and not value.startswith("{") else _braced(value)
+    return _default_trust(";".join(f"{shown[k]}={v}" for k, v in parts.items()))
 
 
 # --------------------------------------------------------------- DDL --------
