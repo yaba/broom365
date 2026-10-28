@@ -190,3 +190,16 @@ def test_drop_all_drops_children_first_keeps_what_is_asked_and_reads_no_catalog(
     dropped = [re.search(r"DROP TABLE \[(\w+)\]", q).group(1) for q in c._c.sql if "DROP TABLE" in q]
     assert "app_users" not in dropped and "app_config" not in dropped and dropped == [t for t in reversed(c._schema.tables) if t not in ("app_users", "app_config")]
     assert dropped.index("flags") < dropped.index("flagged_objects") and not any("sys." in q for q in c._c.sql) and c._c.autocommit is False
+
+
+def test_identifier_columns_leave_room_for_long_microsoft_ids_and_every_key_fits_the_900_byte_limit():
+    sc = translate_schema(SCHEMA)
+    for st in sc.statements:
+        m = re.search(r"CREATE TABLE \[(\w+)\]", st)
+        if not m:
+            continue
+        width = {c: int(n) for c, n in re.findall(r"\[(\w+)\] NVARCHAR\((\d+)\)", st)}
+        for c, n in width.items():
+            assert n >= 128 or not (c == "id" or c.endswith("_id")), (m.group(1), c, n)     # a directory role assignment id is over 64 characters
+        for key in re.findall(r"(?:PRIMARY KEY|UNIQUE) \(([^)]*)\)", st):
+            assert sum(width.get(c.strip(" []"), 0) for c in key.split(",")) <= 450, (m.group(1), key)      # 450 characters = 900 bytes

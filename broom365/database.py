@@ -104,6 +104,13 @@ def odbc_connection_string(url: str) -> str:
 # --------------------------------------------------------------- DDL --------
 _KEY_WIDTH = {"scope": 128, "rule_name": 128, "signal": 128, "name": 128, "username": 128, "trustee": 256}
 _INDEXED_DISPLAY_NAME = 450
+# Identifiers come from Microsoft: GUIDs (36), but also longer ones (a directory role assignment id is over 64 characters). A key may not exceed
+# 450 characters in all (900 bytes), and the widest key below (ids of 128 plus short words) stays within it.
+_ID_WIDTH = 128
+
+
+def _is_id(column: str) -> bool:
+    return column == "id" or column.endswith("_id")
 
 
 def _strip_comments(sql: str) -> str:
@@ -201,7 +208,7 @@ def translate_schema(sql: str) -> Schema:
             typ = "INT"
         elif typ == "TEXT":
             if name in tables[table]["bounded"]:
-                width = _KEY_WIDTH.get(name, _INDEXED_DISPLAY_NAME if name == "display_name" else 64)
+                width = _KEY_WIDTH.get(name, _INDEXED_DISPLAY_NAME if name == "display_name" else _ID_WIDTH if _is_id(name) else 64)
                 typ = f"NVARCHAR({width})"
             else:
                 typ = "NVARCHAR(MAX)"

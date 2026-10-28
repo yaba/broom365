@@ -95,6 +95,8 @@ ALTER ROLE db_datareader ADD MEMBER broom365;
 ALTER ROLE db_datawriter ADD MEMBER broom365;
 ```
 
+If you installed an older version on SQL Server, some key columns are narrower than the current ones (a long directory role assignment id did not fit): open **Settings** and use *Delete database*, which drops and recreates the synced tables with the current widths and keeps the accounts and the Microsoft 365 connection.
+
 Tables are created in the user's default schema, normally `dbo`; give the user `ALTER ON SCHEMA::dbo` if `CREATE TABLE` is refused there.
 
 Environment variables are optional now and win over what the installer saved: `DATABASE_URL` and `BROOM_KEY` (handy for automated deployments). `DATABASE_URL` accepts any ODBC option:
