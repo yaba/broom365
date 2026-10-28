@@ -13,6 +13,8 @@
   .problems { background: #fdecea; border: 1px solid #f1b0a8; color: #7a1a10; border-radius: 6px; padding: .6rem 1rem; }
   .problems ul { margin: .2rem 0; padding-left: 1.2rem; }
   button { padding: 10px 22px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.secondary { padding: 7px 16px; font-weight: 500; background: #f6f6f6; border: 1px solid #888; border-radius: 6px; }
+  .ok { color: #14532d; } .no { color: #7a1a10; }
   code { background: #f2f2f2; padding: 1px 4px; border-radius: 4px; }
   details { margin-top: .8rem; }
 </style></head>
@@ -51,6 +53,8 @@
         <p class="hint">Any option of the Microsoft ODBC driver, written <code>Name=value</code>.</p>
       </details>
     </div>
+    <p style="margin:1rem 0 0"><button type="button" id="test" class="secondary">Test connection</button>
+      <span id="test-result" role="status" style="margin-left:.6rem"></span></p>
     <label><input type="radio" name="storage" value="sqlite" {{ 'checked' if values.storage == 'sqlite' }}> SQLite, a file on this server</label>
     <p class="hint" id="sqlite-hint">Simple and enough for one person or a small team. The data goes to <code>{{ sqlite_file }}</code>; in Docker keep that folder on a volume.</p>
   </fieldset>
@@ -86,6 +90,17 @@
     }
     radios.forEach(function (r) { r.addEventListener('change', sync); });
     sync();
+
+    // "Test connection": try the settings of the form without saving anything and show the answer next to the button.
+    var form = document.querySelector('form'), button = document.getElementById('test'), out = document.getElementById('test-result');
+    button.addEventListener('click', function () {
+      button.disabled = true; out.className = ''; out.textContent = 'Testing (this can take up to 15 seconds)...';
+      fetch('/test', { method: 'POST', headers: { 'X-CSRF-Token': form.csrf_token.value }, body: new FormData(form) })
+        .then(function (r) { return r.json(); })
+        .then(function (d) { out.className = d.ok ? 'ok' : 'no'; out.textContent = (d.ok ? '\u2713 ' : '\u2717 ') + d.message; })
+        .catch(function () { out.className = 'no'; out.textContent = '\u2717 Could not run the test. Reload the page and try again.'; })
+        .then(function () { button.disabled = false; });
+    });
   })();
 </script>
 </body></html>

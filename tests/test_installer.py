@@ -232,3 +232,39 @@ def test_the_installer_key_encrypts_the_saved_client_secret(home):
     assert sealed.startswith("enc:") and "s3cret" not in sealed and appconfig.unseal(sealed) == "s3cret"
     bootstrap.use_key("another-key-another-key-1")
     assert appconfig.unseal(sealed) is None
+
+
+# ------------------------------------------------------- the Test button ------
+MSSQL_FIELDS = {"storage": "mssql", "server": "sql01", "port": "1981", "database": "broom", "user": "svc", "db_password": "Sup3r-Secret!", "encryption": "trust"}
+
+
+def test_the_test_button_reports_success_without_saving_anything(home, monkeypatch):
+    monkeypatch.setattr("broom365.installer._test", lambda url: "database broom on SQL Server 16.0.1000")
+    c = Client(create_setup_app(lambda: pytest.fail("testing must not start the application")), Response)
+    r = c.post("/test", data=MSSQL_FIELDS, headers={"X-CSRF-Token": token(c)})
+    assert r.get_json() == {"ok": True, "message": "The connection works: database broom on SQL Server 16.0.1000."}
+    assert not bootstrap.path().exists() and not bootstrap.data_path().exists()
+
+
+def test_the_test_button_explains_a_failure_and_never_echoes_the_password(home, monkeypatch):
+    def refuse(url):
+        raise RuntimeError("('28000', '[28000] Login failed for user svc (18456)')")
+    monkeypatch.setattr("broom365.installer._test", refuse)
+    c = Client(create_setup_app(lambda: None), Response)
+    body = c.post("/test", data=MSSQL_FIELDS, headers={"X-CSRF-Token": token(c)}).get_data(as_text=True)
+    assert '"ok":false' in body.replace(" ", "") and "refused the user name or password" in body and "Sup3r-Secret!" not in body
+
+
+def test_the_test_button_checks_the_fields_first_and_needs_the_csrf_token(home, monkeypatch):
+    monkeypatch.setattr("broom365.installer._test", lambda url: pytest.fail("incomplete settings must not be tried"))
+    c = Client(create_setup_app(lambda: None), Response)
+    r = c.post("/test", data={**MSSQL_FIELDS, "server": "", "database": ""}, headers={"X-CSRF-Token": token(c)})
+    assert r.get_json()["ok"] is False and "SQL Server name" in r.get_json()["message"] and "name of the database" in r.get_json()["message"]
+    assert c.post("/test", data=MSSQL_FIELDS).status_code == 400
+
+
+def test_the_test_button_also_checks_that_the_sqlite_folder_can_be_written(home):
+    c = Client(create_setup_app(lambda: None), Response)
+    d = c.post("/test", data={"storage": "sqlite"}, headers={"X-CSRF-Token": token(c)}).get_json()
+    assert d["ok"] is True and "can be written" in d["message"] and not bootstrap.path().exists()
+    assert 'id="test"' in c.get("/").get_data(as_text=True)
