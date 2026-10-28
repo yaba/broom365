@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% import "_detail.html" as d %}
+{% block title %}{{ facts.display_name }} - Broom365{% endblock %}
+{% block content %}
+{{ d.head(facts.display_name, a, user_links(u['id'])) }}
+{{ d.flags(a) }}
+
+<section class="panel">
+  <h2>User</h2>
+  <dl class="kv">
+    <dt>User principal name</dt><dd>{{ u['user_principal_name'] or '—' }}</dd>
+    <dt>Object ID</dt><dd><code>{{ u['id'] }}</code></dd>
+    <dt>Account</dt><dd>{% if u['account_enabled'] is none %}<span class="muted">unknown</span>{% elif u['account_enabled'] %}Enabled{% else %}<span class="st-warn">Disabled</span> <span class="muted">(cannot sign in)</span>{% endif %} ({{ u['user_type'] or 'unknown type' }})</dd>
+    <dt>Directory roles</dt><dd>{{ facts.role_names | join(', ') if facts.role_names else 'None' }}</dd>
+    <dt>Last sign-in</dt><dd>{% if not facts.sign_in_available %}<span class="muted">unavailable (beta endpoint, licence or AuditLog.Read.All)</span>
+      {% elif facts.last_sign_in_at %}{{ facts.last_sign_in_at | fmt_date }} <span class="muted">{{ facts.last_sign_in_at | days_ago }}</span>
+      {% else %}no sign-in on record{% endif %}</dd>
+  </dl>
+</section>
+{% endblock %}

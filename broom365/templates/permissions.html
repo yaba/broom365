@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Broom365 - permissions</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem">
+<h1>Graph permissions need attention</h1>
+
+{% if error %}
+<p><strong>Broom365 could not get a token for the application</strong> (<code>{{ client_id }}</code>):</p>
+<pre style="white-space:pre-wrap;background:#f4f4f4;padding:8px;border-radius:6px">{{ error }}</pre>
+<p>Check <code>TENANT_ID</code>, <code>CLIENT_ID</code> and <code>CLIENT_SECRET</code> in <code>.env</code> (use the secret's
+<em>Value</em>, and make sure it has not expired), then <a href="{{ url_for('auth.permissions', recheck=1) }}">re-check</a>.</p>
+{% else %}
+  {% if report.status == "blocked" %}
+  <p><strong>Broom365 cannot run:</strong> required {{ 'application' if mode == 'app' else 'delegated' }} permissions are not granted to the app registration
+  (<code>{{ client_id }}</code>).</p>
+  {% else %}
+  <p>Broom365 can run, but some signals will be <strong>unavailable</strong> until the permissions below are granted.</p>
+  {% endif %}
+
+  {% for title, items in (("Required - missing", report.missing_required), ("Optional - missing (signals degrade)", report.missing_optional)) %}
+  {% if items %}<h2>{{ title }}</h2><ul>
+  {% for r in items %}<li><code>{{ r.scope }}</code> - {{ r.enables }}</li>{% endfor %}</ul>{% endif %}
+  {% endfor %}
+
+  <h2>How to fix</h2>
+  {% if mode == 'app' %}
+  <ol>
+  <li>Entra admin center &rarr; App registrations &rarr; your app &rarr; API permissions &rarr; Add a permission &rarr;
+  Microsoft Graph &rarr; <strong>Application permissions</strong> (not Delegated) and add the scopes above.</li>
+  <li>Click <strong>Grant admin consent</strong>, or have a Global Administrator use
+  <a href="{{ consent_url }}">this admin consent link</a>.</li>
+  <li><a href="{{ url_for('auth.permissions', recheck=1) }}">Re-check</a>. No sign-in is needed: the app reads its own granted permissions.</li>
+  </ol>
+  {% else %}
+  <ol>
+  <li>Entra admin center &rarr; App registrations &rarr; your app &rarr; API permissions &rarr; Add a permission &rarr;
+  Microsoft Graph &rarr; <strong>Delegated permissions</strong> and add the scopes above.</li>
+  <li>Click <strong>Grant admin consent</strong>, or have a Global Administrator use
+  <a href="{{ consent_url }}">this admin consent link</a>.</li>
+  <li><a href="{{ url_for('auth.logout') }}">Sign out and sign in again</a> so a new token carries the scopes.</li>
+  </ol>
+  {% endif %}
+
+  {% if report.status == "degraded" %}
+  <form method="post" action="{{ url_for('auth.permissions_continue') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button type="submit">Continue with reduced signals</button></form>
+  {% endif %}
+  <details><summary>Permissions currently granted</summary><p>{{ report.granted | join(", ") or "none" }}</p></details>
+{% endif %}
+</body></html>

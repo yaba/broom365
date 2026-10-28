@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% import "_detail.html" as d %}
+{% block title %}{{ g['display_name'] }} - Broom365{% endblock %}
+{% block content %}
+{{ d.head(g['display_name'], a, group_links(g['id'])) }}
+{% if a %}{{ d.flags(a) }}{% else %}{{ d.not_scanned('group') }}{% endif %}
+{{ d.coverage(coverage, not_checked) }}
+
+<section class="panel">
+  <h2>Group</h2>
+  <dl class="kv">
+    <dt>Object ID</dt><dd><code>{{ g['id'] }}</code></dd>
+    <dt>Description</dt><dd>{{ g['description'] or '—' }}</dd>
+    <dt>Created</dt><dd>{{ g['created_at'] | fmt_date }} <span class="muted">{{ g['created_at'] | days_ago }}</span></dd>
+    <dt>Membership</dt><dd>{% if g['membership_rule'] %}Dynamic: <code>{{ g['membership_rule'] }}</code>{% else %}Assigned{% endif %}</dd>
+    <dt>Type</dt><dd>{{ 'Security' if g['security_enabled'] else '' }}{{ ' + ' if g['security_enabled'] and g['mail_enabled'] else '' }}{{ 'Mail-enabled' if g['mail_enabled'] else '' }}</dd>
+    <dt>Members</dt><dd>{% if facts %}{{ facts.member_count if facts.member_count is not none else 'not retrieved' }}{% else %}&mdash;{% endif %}</dd>
+    <dt>Last membership change</dt><dd>{% if facts and facts.last_membership_change_at %}{{ facts.last_membership_change_at | fmt_date }}
+      <span class="muted">{{ facts.last_membership_change_at | days_ago }}</span>{% elif facts %}<span class="muted">not available (audit log), staleness uses creation date</span>{% else %}&mdash;{% endif %}</dd>
+    <dt>Microsoft 365 group</dt><dd>{% if is_m365 %}Yes &mdash; may back a Team, SharePoint site, Planner or shared mailbox (not checked){% else %}No{% endif %}</dd>
+    <dt>Directory roles</dt><dd>{{ roles | join(', ') if roles else 'None' }}</dd>
+  </dl>
+</section>
+
+{% if a %}
+<section class="panel">
+  <h2>Owners ({{ owners | length }})</h2>
+  {% if owners %}<table class="tbl"><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody>
+    {% for o in owners %}<tr><td>{{ o['display_name'] or o['owner_id'] }}</td><td>{{ o['owner_type'] }}</td></tr>{% endfor %}
+  </tbody></table>{% else %}<p class="muted">This group has no owner.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Application assignments ({{ assignments | length }})</h2>
+  {% if assignments %}<table class="tbl"><thead><tr><th>Application</th><th>Target state</th><th>Assigned</th></tr></thead><tbody>
+    {% for x in assignments %}<tr>
+      <td>{% if x['app_object_id'] %}<a href="{{ url_for('apps.detail', oid=x['app_object_id']) }}">{{ x['resource_display_name'] }}</a>{% else %}{{ x['resource_display_name'] or x['resource_sp_id'] }}{% endif %}</td>
+      <td>{% if x['sp_id'] is none %}<span class="st-bad">Does not exist{% if x['deleted_at'] %} (deleted {{ x['deleted_at'] | fmt_date }}){% endif %}</span>
+          {% elif x['sp_enabled'] == 0 %}<span class="st-bad">Disabled</span>
+          {% else %}<span class="st-good">Exists, enabled</span>{% endif %}</td>
+      <td>{{ x['assigned_at'] | fmt_date }}</td></tr>{% endfor %}
+  </tbody></table>{% else %}<p class="muted">No application assignments were found.</p>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

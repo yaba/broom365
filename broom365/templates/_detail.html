@@ -1,0 +1,53 @@
+{# Shared pieces for the detail pages. #}
+{% macro head(title, assessment, links=none, back=none) %}
+<p class="crumb"><a href="{{ back or url_for('dashboard.index') }}">&larr; Dashboard</a></p>
+<div class="detail-head">
+  <h1>{{ title }}</h1>
+  {% if assessment %}<span class="risk {{ assessment.risk.value|lower }}">{{ assessment.risk.value }}</span>{% endif %}
+  {% for label, url in (links or []) %}<a class="btn-link" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ label }} &#8599;</a>{% endfor %}
+</div>
+{% endmacro %}
+
+{% macro flags(assessment) %}
+<section class="panel">
+  <h2>Findings</h2>
+  {% if assessment.flags %}
+    {% for f in assessment.flags %}
+    <div class="flag">
+      <span class="chip">{{ f.code.value }}</span>
+      <p>{{ f.explanation }}</p>
+      {% if f.evidence %}<details><summary>Evidence</summary><pre>{{ f.evidence | tojson(indent=2) }}</pre></details>{% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="ok-note">No flags raised on the data collected. This is not a statement that the object is needed or unneeded.</p>
+  {% endif %}
+  {% if assessment.unavailable_signals %}
+    <h2 style="margin-top:12px">Signals not evaluated</h2>
+    <ul>{% for u in assessment.unavailable_signals %}<li>{{ u }}</li>{% endfor %}</ul>
+  {% endif %}
+</section>
+{% endmacro %}
+
+{% macro not_scanned(kind) %}
+<div class="notscanned"><strong>Not scanned yet.</strong> Only inventory data is shown, and no findings are computed for
+  this {{ kind }}. Add it to the scan scope on the dashboard to evaluate it.</div>
+{% endmacro %}
+
+{% macro coverage(rows, not_checked) %}
+<section class="panel">
+  <h2>Where this group is used</h2>
+  <p class="muted small">"None found" only covers the places listed here. A group can also be used in places Broom365 does not
+    look at (listed below), so treat an unused result as a candidate for review, not proof.</p>
+  <table class="tbl"><thead><tr><th>Checked</th><th>Result</th></tr></thead><tbody>
+  {% for r in rows %}<tr>
+    <td>{{ r.label }}</td>
+    <td>{% if r.status == 'found' %}<span class="st-good">In use</span>
+          <ul class="tight">{% for i in r['items'] %}<li>{{ i }}</li>{% endfor %}</ul>
+        {% elif r.status == 'none' %}<span class="muted">None found</span>
+        {% else %}<span class="st-warn">Not checked</span> <span class="muted small">{{ r.reason or '' }}</span>{% endif %}</td></tr>{% endfor %}
+  </tbody></table>
+  <details style="margin-top:10px"><summary>Not checked by Broom365 &mdash; verify manually</summary>
+    <ul>{% for n in not_checked %}<li>{{ n }}</li>{% endfor %}</ul></details>
+</section>
+{% endmacro %}

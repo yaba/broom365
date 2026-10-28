@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Accounts - Broom365{% endblock %}
+{% block content %}
+<h1 class="page-title">Accounts</h1>
+<p class="muted small">Who can use Broom365. <strong>Admins</strong> manage Settings and accounts and can delete the database; <strong>readers</strong> see the
+  findings and can run inventories and checks. A new or reset account gets a temporary password that must be changed at the first sign-in.</p>
+{% if error %}<div class="notice" role="alert"><strong>Not done:</strong> {{ error }}</div>{% endif %}
+
+<section class="panel">
+  <h2>Accounts</h2>
+  <table class="tbl"><thead><tr><th>Username</th><th>Role</th><th>Last sign-in</th><th>Status</th><th></th></tr></thead><tbody>
+  {% for a in accounts %}
+    <tr>
+      <td>{{ a.username }}{% if a.id == me.id %} <span class="pill">you</span>{% endif %}</td>
+      <td>
+        <form method="post" action="{{ url_for('accounts.role', account_id=a.id) }}" style="display:inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <select name="role" aria-label="Role of {{ a.username }}" onchange="this.form.submit()">
+            {% for r in roles %}<option value="{{ r }}" {% if r == a.role %}selected{% endif %}>{{ r }}</option>{% endfor %}
+          </select>
+        </form>
+      </td>
+      <td class="muted">{{ a.last_login_at[:16].replace('T', ' ') ~ ' UTC' if a.last_login_at else 'never' }}</td>
+      <td>{% if not a.has_password %}<span class="st-warn">no password yet</span>{% elif a.must_change_password %}<span class="st-warn">must change password</span>{% else %}<span class="muted">active</span>{% endif %}</td>
+      <td>
+        <form method="post" action="{{ url_for('accounts.reset', account_id=a.id) }}" style="display:inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="password" name="password" placeholder="new temporary password" minlength="10" required autocomplete="new-password" aria-label="Temporary password for {{ a.username }}">
+          <button class="btn" type="submit">Reset password</button>
+        </form>
+        {% if a.id != me.id %}
+        <form method="post" action="{{ url_for('accounts.remove', account_id=a.id) }}" style="display:inline"
+              onsubmit="return confirm('Delete the account {{ a.username }}?')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="btn" type="submit">Delete</button>
+        </form>{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody></table>
+</section>
+
+<section class="panel">
+  <h2>New account</h2>
+  <form method="post" action="{{ url_for('accounts.add') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <p><label>Username<br><input name="username" required autocomplete="off" value="{{ form.username or '' }}"></label></p>
+    <p><label>Temporary password (at least 10 characters)<br><input type="password" name="password" required minlength="10" autocomplete="new-password"></label></p>
+    <p><label>Role<br><select name="role">{% for r in roles %}<option value="{{ r }}" {% if r == form.role %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></label></p>
+    <button class="btn" type="submit">Create account</button>
+  </form>
+</section>
+{% endblock %}

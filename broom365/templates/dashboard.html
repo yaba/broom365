@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Broom365{% endblock %}
+{% block content %}
+
+{% macro scope_panel(kind, title, placeholder, noun, reads, note) %}
+<section class="scope" aria-label="{{ title }} scan scope">
+  <div class="scope-head"><h2>Check on demand</h2>
+    <span class="muted">{{ counts[kind ~ '_scanned'] }} of {{ counts[kind ~ '_total'] }} {{ noun }} checked</span></div>
+  <p class="muted small">The inventory only lists things. Checking reads {{ reads }}, and only for the {{ noun }} you select. One pattern per line:
+    <code>*</code> any characters, <code>?</code> one character, <code>!</code> prefix to exclude, <code>#</code> comment. {{ note }}</p>
+  <textarea id="scope-{{ kind }}" data-kind="{{ kind }}" rows="3" aria-label="{{ title }} patterns" placeholder="{{ placeholder }}">{{ patterns[kind] }}</textarea>
+  <div class="preview" id="pv-{{ kind }}"></div>
+  <button type="button" class="btn scan" data-kind="{{ kind }}">Check {{ noun }}</button>
+</section>
+{% endmacro %}
+
+<section class="freshness" id="freshness" data-syncing="{{ 'true' if syncing else 'false' }}">
+  <div>
+    {% if inventory %}
+      <strong>Inventory</strong>
+      <time datetime="{{ inventory['finished_at'] }}">{{ inventory['finished_at'][:16].replace('T', ' ') }} UTC</time>
+      <span class="sep">&middot;</span>
+      {% if scan %}<strong>Last scan</strong>
+        <time datetime="{{ scan['finished_at'] }}">{{ scan['finished_at'][:16].replace('T', ' ') }} UTC</time>
+      {% else %}<strong>No scan yet</strong>{% endif %}
+      {% if (inventory['status'] == 'partial') or (scan and scan['status'] == 'partial') %}
+        <span class="pill warn">some signals unavailable</span>{% endif %}
+    {% elif latest and latest['status'] == 'failed' %}
+      <strong>Last sync failed.</strong> <span class="muted">{{ latest['error'] }}</span>
+    {% else %}
+      <strong>No data yet.</strong>
+    {% endif %}
+    <span class="muted" id="sync-progress"></span>
+  </div>
+  <button type="button" id="inventory" class="btn secondary">Refresh inventory</button>
+</section>
+
+{% if data %}
+  {% if data.unavailable %}
+  <details class="notice slim" aria-label="Unavailable signals">
+    <summary><strong>{{ data.unavailable | length }} signal{{ 's' if data.unavailable | length != 1 }} unavailable</strong> in this tenant, so the related flags are not shown.</summary>
+    <ul>{% for s in data.unavailable %}<li><code>{{ s.signal }}</code> &mdash; {{ s.reason }}</li>{% endfor %}</ul>
+    <a href="{{ url_for('settings.show') }}">See Settings to validate permissions</a>
+  </details>
+  {% endif %}
+
+  <nav class="tabs" aria-label="Object types">
+    {% for key, label in tabs %}
+      <a href="{{ url_for('dashboard.index', tab=key) }}" class="{{ 'active' if key == tab }}" {% if key == tab %}aria-current="page"{% endif %}>{{ label }}
+        <span class="count" title="Flagged {{ key }}">{{ data.tab_counts[key] }}</span></a>
+    {% endfor %}
+  </nav>
+
+  {% if tiles %}
+  <section class="strip" aria-label="Summary of {{ tab }}">
+    {% for t in tiles %}
+      <button type="button" class="tile {{ t.tone }}" {% if t.tag is defined %}data-tag="{{ t.tag }}"{% else %}data-flag="{{ t.flag }}"{% endif %}
+              title="{{ 'Show only these rows' if (t.tag or t.flag) else 'Show every row' }}">
+        <span class="num">{% if t.value is none %}&mdash;{% else %}{{ t.value }}{% endif %}</span>
+        <span class="lbl">{{ t.label }}</span>
+        {% if t.hint %}<span class="hint">{{ t.hint }}</span>{% endif %}
+      </button>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% if tab == 'groups' %}
+    {{ scope_panel('groups', 'Groups', 'win10-app-deployment*', 'groups', 'owners, members, nesting and audit activity', 'Groups holding a directory role are always checked.') }}
+  {% elif tab == 'apps' %}
+    {{ scope_panel('apps', 'Apps', 'Contoso*', 'apps', 'owners and application permissions', 'App registrations of this tenant.') }}
+  {% elif tab == 'dls' %}
+    <section class="scope">
+      <div class="scope-head"><h2>Exchange distribution lists</h2><span class="muted">listed by the inventory</span></div>
+      <p class="muted small">Distribution lists, mail-enabled security groups and dynamic lists, read from Exchange Online in one call. <strong>No owner</strong> comes straight from the
+        inventory. To know whether a list is <strong>used</strong>, check it below: Broom365 counts its members and asks message trace whether any mail was addressed to it
+        in the last 89 days (the longest history Exchange keeps). A list with no mail that is also empty or ownerless, and that no transport rule mentions, is flagged as
+        likely unused. A list can still be used where Broom365 does not look (shared mailbox and calendar permissions, membership of other lists, SharePoint), and
+        synced lists must be changed in on-premises AD.</p>
+    </section>
+  {% elif tab == 'mailboxes' %}
+    <section class="scope">
+      <div class="scope-head"><h2>Shared, room and equipment mailboxes</h2>
+        <span class="muted">{% if mailboxes.available %}read {{ mailboxes.read_at[:10] }}: {{ mailboxes.count }} mailboxes{% else %}not read yet{% endif %}</span></div>
+      <p class="muted small">These accounts have no password to sign in with, so they are not <em>stale users</em>; what matters is whether anyone still uses the mailbox. Check a mailbox below:
+        Broom365 reads its last sign-in, who has <strong>Full Access</strong> or <strong>Send As</strong> (accounts that are deleted or disabled are called out), and asks message trace
+        whether any mail arrived in the last 89 days. A shared mailbox that nobody can open, or that has had no sign-in and no mail, is flagged. It can still be used where Broom365
+        does not look (an app sending as it, forwarding rules), so every finding is a candidate for review.</p>
+      <p class="small"><button type="button" class="btn secondary scan" data-kind="mailbox_types">{{ 'Re-read' if mailboxes.available else 'Read' }} mailbox list (about 40 s)</button>
+        {% if not mailboxes.available %}<strong>Read the list first</strong>: it is the inventory of this tab.{% endif %}</p>
+    </section>
+  {% elif tab == 'rules' %}
+    <section class="scope">
+      <div class="scope-head"><h2>Exchange mail flow (transport) rules</h2><span class="muted">listed by the inventory</span></div>
+      <p class="muted small">Rules that are <strong>disabled</strong>, <strong>expired</strong>, only <strong>auditing</strong> (not enforcing), or that name an address of this tenant which matches
+        no distribution list, mailbox, user alias or group (<strong>dead reference</strong>). The last one needs the mailbox list to have been read (Shared mailboxes tab) and cannot see mail contacts
+        or public folders, so confirm it in Exchange before acting. Nothing here proves a rule is unused: Exchange does not report how often a rule matched.</p>
+    </section>
+  {% elif tab == 'members' %}
+    <section class="scope">
+      <div class="scope-head"><h2>Internal users</h2><span class="muted">listed by the inventory</span></div>
+      <p class="muted small">Ordinary (non-guest) accounts that cost money or linger unused. <strong>Disabled with licences</strong>: the account cannot be used but still holds paid
+        licences. <strong>Stale</strong>: an enabled account with no sign-in for a long time (or created long ago and never signed in); MEDIUM when it holds a paid licence.
+        Free licences (Power Automate free, Power BI free...) do not count as spend. Accounts synced from on-premises AD must be changed there. Service and shared accounts may not
+        sign in interactively, so review before acting. Privileged accounts are on the Users tab. The threshold is in Settings.</p>
+      <p class="small">{% if mailboxes.available %}Exchange mailbox types read: <strong>{{ mailboxes.count }}</strong> shared, room and equipment mailboxes ({{ mailboxes.read_at[:10] }}), so disabled
+        accounts that are mailboxes by design are not reported.{% else %}Disabled accounts <strong>without a licence</strong> are not reported yet: shared, room and equipment mailboxes are
+        disabled by design, and only Exchange can tell them apart from leftovers.{% endif %}
+        <button type="button" class="btn secondary scan" data-kind="mailbox_types">{{ 'Re-read' if mailboxes.available else 'Read' }} mailbox types (about 40 s)</button></p>
+    </section>
+  {% elif tab == 'guests' %}
+    <section class="scope">
+      <div class="scope-head"><h2>External (guest) users</h2><span class="muted">listed by the inventory</span></div>
+      <p class="muted small">People from other organisations who were invited. <strong>Stale</strong> guests have not signed in for a long time (or were added long ago and never
+        signed in); <strong>pending</strong> ones never accepted the invitation. They keep an access path into the tenant, so they are candidates for review. A disabled guest
+        is already inert (LOW). Search by name, e-mail or the guest's company domain to clean up a whole partner at once. Thresholds are in Settings.</p>
+      {% if domains %}<div class="chips" aria-label="Companies with the most flagged guests">
+        {% for d, n in domains %}<button type="button" class="chip dom" data-q="{{ d }}" title="Show only guests from {{ d }}">{{ d }} <b>{{ n }}</b></button>{% endfor %}
+        <button type="button" class="chip dom" data-q="">all</button></div>{% endif %}
+    </section>
+  {% elif tab == 'scripts' %}
+    <section class="scope">
+      <div class="scope-head"><h2>Intune scripts and remediations</h2><span class="muted">listed by the inventory</span></div>
+      <p class="muted small">PowerShell scripts, macOS shell scripts and Remediations. A script is flagged when it is <strong>unassigned</strong>, targets
+        only <strong>empty groups</strong>, has <strong>never succeeded</strong>, is an assigned remediation that has gone <strong>idle</strong>, or is
+        <strong>old</strong>. Old + any of the others is <code>LIKELY_OBSOLETE_SCRIPT</code>. Unassigned, old and empty-target come straight from the inventory; failing and
+        idle need the run results, which you read below for the scripts you choose. Thresholds are in Settings; the groups they target also count as "used" on each group page.</p>
+    </section>
+  {% elif tab == 'updates' %}
+    <section class="scope">
+      <div class="scope-head"><h2>Windows update policies</h2><span class="muted">evaluated automatically from the inventory</span></div>
+      <p class="muted small">Update rings, feature update profiles, expedite (quality) profiles and driver update profiles of Intune, with what each one sets and who it reaches.
+        A policy is flagged when it is <strong>assigned to nobody</strong> or only to empty groups, when it <strong>overlaps</strong> another policy of the same kind (a device in both
+        gets two sets of settings), when a ring sets <strong>no deadline</strong> (Microsoft recommends deadlines), when a ring <strong>pauses</strong> updates (a pause ends after 35 days),
+        when the Windows version of a feature profile is <strong>out of support</strong> or about to be, when a driver profile waits for <strong>manual approval</strong>, or when an expedite profile is
+        <strong>old</strong>. Update rings made with the Settings catalog and Windows Autopatch groups are not read yet, and devices are not looked at: this is about the policies. The groups they target
+        also count as "used" on each group page. Thresholds are in Settings.</p>
+    </section>
+  {% elif tab == 'intune' %}
+    <section class="scope">
+      <div class="scope-head"><h2>Intune apps</h2><span class="muted">evaluated automatically from the inventory</span></div>
+      <p class="muted small">Two kinds of cleanup candidates. <strong>Uninstall-only</strong> apps have only uninstall assignments and no required/available one:
+        they are no longer deployed, only removed. <strong>Unassigned</strong> apps are deployed to nobody; once you check an app's relations below, apps that another app depends on are left out,
+        and an old version superseded by a newer app is called out (deleting it removes the supersedence link). Exclusions are ignored. Uninstall-only apps appear straight from the inventory.</p>
+    </section>
+  {% else %}
+    <section class="scope">
+      <div class="scope-head"><h2>Privileged users</h2><span class="muted">{{ rows | length }} user(s) holding a directory role</span></div>
+      <p class="muted small">Every user holding an Entra directory role is evaluated automatically (there are few), so no scan scope is needed.
+        Dormancy needs sign-in activity (<code>AuditLog.Read.All</code>); when it cannot be read it is reported as unavailable, never guessed.</p>
+    </section>
+  {% endif %}
+
+  {% if tab == 'intune' %}
+    {{ scope_panel('intune', 'Intune apps', '7-Zip*', 'Intune apps', 'dependency and supersedence links (that is what tells an unused app from an old version or a dependency another app needs)', 'Uninstall-only apps need no check.') }}
+  {% elif tab == 'scripts' %}
+    {{ scope_panel('scripts', 'Scripts', '*', 'scripts', 'run results (success and error counts, last run), which the failing and idle checks need', 'Unassigned, old and empty-target scripts need no check.') }}
+  {% elif tab == 'guests' %}
+    {{ scope_panel('guests', 'Guests', 'partner-corp.com', 'guests', 'the groups and Teams each guest belongs to, nested groups included, so you can see what access is still open', 'Match a name, an e-mail (<code>*@partner-corp.com</code>) or a company domain (<code>partner-corp.com</code>).') }}
+  {% elif tab == 'mailboxes' %}
+    {{ scope_panel('mailboxes', 'Mailboxes', 'sales-*', 'mailboxes', 'the last sign-in, Full Access / Send As holders and, through message trace, the newest mail received in the last 89 days (about 7 seconds per mailbox)', 'Match a name or an address.') }}
+  {% elif tab == 'dls' %}
+    {{ scope_panel('dls', 'Distribution lists', 'info@*', 'distribution lists', 'the member count and, through message trace, the newest mail addressed to each list in the last 89 days (about 4 seconds for a list with no mail, less when it has some)', 'Match a name or an address.') }}
+  {% endif %}
+
+  <section class="filters" aria-label="Filters">
+    <input type="search" id="q" placeholder="Search name, flag or explanation" aria-label="Search">
+    <select id="f-risk" aria-label="Risk"><option value="">All risk levels</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option></select>
+    <select id="f-flag" aria-label="Flag"><option value="">All flags</option>{% for c in flag_codes %}<option>{{ c }}</option>{% endfor %}</select>
+    <label class="muted"><input type="checkbox" id="f-low" {% if tab in ('users', 'intune', 'scripts', 'updates', 'guests', 'members', 'dls', 'mailboxes', 'rules', 'apps') %}checked{% endif %}> Show LOW risk</label>
+    {% if tab == 'guests' %}<select id="f-sort" aria-label="Sort"><option value="">Sort: risk</option><option value="old">Invited: oldest first</option><option value="new">Invited: newest first</option></select>{% endif %}
+    <span class="muted" id="count"></span>
+    <a class="btn-link" href="{{ url_for('export.export_tab', tab=tab) }}" title="All rows of this tab as CSV (the filters above do not apply)">Export this tab (CSV)</a>
+  </section>
+
+  {% if tab == 'apps' %}
+  <table class="grid apps" id="objects">
+    <thead><tr><th>Risk</th><th>App registration</th><th>Secrets</th><th>Owners</th><th>High-risk permissions</th><th>Findings</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr data-risk="{{ r.risk }}" data-tags="{{ r.tags }}" data-flags="{{ r.flags|map(attribute='flag')|join(' ') }}">
+        <td>{% if r.risk != 'NONE' %}<span class="risk {{ r.risk|lower }}">{{ r.risk }}</span>{% else %}<span class="muted" title="Nothing flagged">&ndash;</span>{% endif %}</td>
+        <td class="name"><a href="{{ url_for('apps.detail', oid=r.id) }}">{{ r.name }}</a>
+          <div class="muted small">{% if r.extra.created %}Created {{ r.extra.created | fmt_date }} &middot; {{ r.extra.age }} days old{% else %}Creation date unknown{% endif %}</div></td>
+        <td>{% if r.extra.expired %}<span class="fact bad">{{ r.extra.expired }} expired</span>{% endif %}{% if r.extra.expiring %}<span class="fact warn">{{ r.extra.expiring }} expiring</span>{% endif %}
+          {% if not r.extra.expired and not r.extra.expiring %}{% if r.extra.secrets %}<span class="fact ok">{{ r.extra.secrets }} valid</span>{% else %}<span class="muted">none</span>{% endif %}{% endif %}</td>
+        <td>{% if not r.extra.checked %}<span class="muted nc" title="Check this app to read its owners">not checked</span>{% elif r.extra.owners == 0 %}<span class="fact bad">none</span>{% else %}{{ r.extra.owners }}{% endif %}</td>
+        <td>{% if not r.extra.checked %}<span class="muted nc" title="Check this app to read its permissions">not checked</span>{% elif r.extra.high %}<span class="fact bad" title="{{ r.extra.high | join(', ') }}">{{ r.extra.high | length }} high-risk</span>{% else %}<span class="muted">none</span>{% endif %}</td>
+        <td class="why">{% if r.flags %}<div class="chips">{% for f in r.flags %}<span class="chip">{{ f.flag }}</span>{% endfor %}</div>
+            <div class="small">{{ r.flags[0].explanation }}</div>
+            {% if r.flags|length > 1 %}<details><summary>+{{ r.flags|length - 1 }} more</summary><ul>{% for f in r.flags[1:] %}<li>{{ f.explanation }}</li>{% endfor %}</ul></details>{% endif %}
+          {% else %}<span class="muted">&ndash;</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% elif tab == 'updates' %}
+  <table class="grid updates" id="objects">
+    <thead><tr><th>Risk</th><th>Update policy</th><th>Settings</th><th>Assigned to</th><th>Findings</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr data-risk="{{ r.risk }}" data-tags="{{ r.tags }}" data-flags="{{ r.flags|map(attribute='flag')|join(' ') }}">
+        <td>{% if r.risk != 'NONE' %}<span class="risk {{ r.risk|lower }}">{{ r.risk }}</span>{% else %}<span class="muted" title="Nothing flagged">&ndash;</span>{% endif %}</td>
+        <td class="name">{{ r.name }}<div class="muted small">{{ r.extra.kind }}{% if r.extra.modified %} &middot; changed {{ r.extra.modified | fmt_date }}{% endif %}</div></td>
+        <td class="small">{{ r.extra.summary }}</td>
+        <td class="small">{{ r.extra.targets }}</td>
+        <td class="why">{% if r.flags %}<div class="chips">{% for f in r.flags %}<span class="chip">{{ f.flag }}</span>{% endfor %}</div>
+            <div class="small">{{ r.flags[0].explanation }}</div>
+            {% if r.flags|length > 1 %}<details><summary>+{{ r.flags|length - 1 }} more</summary><ul>{% for f in r.flags[1:] %}<li>{{ f.explanation }}</li>{% endfor %}</ul></details>{% endif %}
+          {% else %}<span class="muted">&ndash;</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <table class="grid" id="objects">
+    <thead><tr><th>Risk</th><th>{{ 'Intune app' if tab == 'intune' else ('Script' if tab == 'scripts' else ('Guest' if tab == 'guests' else ('User' if tab == 'members' else ('Distribution list' if tab == 'dls' else ('Mailbox' if tab == 'mailboxes' else ('Mail flow rule' if tab == 'rules' else tab[:-1] | capitalize)))))) }}</th><th>Flags</th><th>{% if tab == 'users' %}Status{% else %}Why it was flagged{% endif %}</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      <tr data-risk="{{ r.risk }}" data-invited="{{ (r.extra.invited or '')[:10] if tab == 'guests' else '' }}" data-flags="{{ r.flags|map(attribute='flag')|join(' ') }}">
+        <td><span class="risk {{ r.risk|lower }}">{{ r.risk }}</span></td>
+        <td class="name">{% if tab == 'mailboxes' %}{{ r.name }}{% if r.extra.type == 'RoomMailbox' %}<span class="pill" title="Room mailbox">Room</span>{% elif r.extra.type == 'EquipmentMailbox' %}<span class="pill" title="Equipment mailbox">Equipment</span>{% else %}<span class="pill" title="Shared mailbox">Shared</span>{% endif %}{% for label, url in user_links(r.id)[:1] %}<a class="row-link" href="{{ url }}" target="_blank" rel="noopener noreferrer" title="{{ label }}">&#8599;</a>{% endfor %}<div class="muted small">{{ r.extra.address or '' }}</div>{% elif tab == 'rules' %}{{ r.name }}{% if r.extra.state == 'Disabled' %}<span class="pill warn" title="The rule is disabled">Disabled</span>{% endif %}<div class="muted small">Priority {{ r.extra.priority }}{% if r.extra.mode and r.extra.mode != 'Enforce' %} &middot; {{ r.extra.mode }}{% endif %}</div>{% elif tab == 'dls' %}{{ r.name }}{% if r.extra.kind == 'dynamic' %}<span class="pill" title="Dynamic distribution list">Dynamic</span>{% elif r.extra.kind == 'security' %}<span class="pill" title="Mail-enabled security group">Security</span>{% endif %}{% if r.extra.synced %}<span class="pill" title="Synced from on-premises Active Directory: change it there">AD</span>{% endif %}{% if r.extra.hidden %}<span class="pill" title="Hidden from address lists">Hidden</span>{% endif %}{% for label, url in group_links(r.id)[:1] %}<a class="row-link" href="{{ url }}" target="_blank" rel="noopener noreferrer" title="{{ label }}">&#8599;</a>{% endfor %}<div class="muted small">{{ r.extra.address or '' }}</div>{% elif tab == 'members' %}{{ r.name }}{% if r.extra.enabled is false %}<span class="pill warn" title="The account is disabled">Disabled</span>{% endif %}{% if r.extra.synced %}<span class="pill" title="Synced from on-premises Active Directory: change it there">AD</span>{% endif %}{% for label, url in user_links(r.id)[:1] %}<a class="row-link" href="{{ url }}" target="_blank" rel="noopener noreferrer" title="{{ label }}">&#8599;</a>{% endfor %}<div class="muted small">{{ r.extra.mail or '' }}</div>{% elif tab == 'guests' %}{# rendered below #}{% elif tab == 'scripts' %}{{ r.name }}<div class="muted small">{{ r.extra.kind }}</div>{% elif tab == 'intune' %}{{ r.name }}{% for label, url in intune_app_links(r.id)[:1] %}<a class="row-link" href="{{ url }}" target="_blank" rel="noopener noreferrer" title="{{ label }}">&#8599;</a>{% endfor %}{% else %}<a href="{{ url_for(tab ~ '.detail', oid=r.id) }}">{{ r.name }}</a>{% endif %}
+          {% if tab == 'groups' %}{% for label, url in group_links(r.id)[:1] %}<a class="row-link" href="{{ url }}" target="_blank" rel="noopener noreferrer" title="{{ label }}">&#8599;</a>{% endfor %}
+          {% elif tab == 'guests' %}{{ r.name }}{% if r.extra.enabled is false %}<span class="pill warn" title="The account is disabled">Disabled</span>{% endif %}{% if r.extra.state == 'PendingAcceptance' %}<span class="pill" title="The invitation was never accepted">Invite pending</span>{% endif %}{% for label, url in user_links(r.id)[:1] %}<a class="row-link" href="{{ url }}" target="_blank" rel="noopener noreferrer" title="{{ label }}">&#8599;</a>{% endfor %}<div class="muted small">{{ r.extra.mail or '' }}</div><div class="muted small">Invited: {{ r.extra.invited | fmt_date if r.extra.invited else 'unknown' }}</div>{% elif tab == 'users' %}{% if r.extra.external %}<span class="pill" title="External (guest) account">External</span>{% endif %}{% if r.extra.enabled is false %}<span class="pill warn" title="The account is disabled and cannot sign in">Disabled</span>{% endif %}{% for label, url in user_links(r.id)[:1] %}<a class="row-link" href="{{ url }}" target="_blank" rel="noopener noreferrer" title="{{ label }}">&#8599;</a>{% endfor %}
+            <div class="muted small">{{ r.extra.upn or '' }}</div>
+            <div class="muted small">{{ r.extra.roles }}</div>{% endif %}</td>
+        <td class="chips">{% for f in r.flags %}<span class="chip">{{ f.flag }}</span>{% endfor %}</td>
+        <td class="why">
+          {% if tab == 'users' %}
+            {% if r.extra.available %}Last sign-in: {{ r.extra.last | fmt_date if r.extra.last else 'none on record' }}
+              {% if r.extra.last %}<span class="muted">({{ r.extra.last | days_ago }})</span>{% endif %}
+            {% else %}<span class="muted">Sign-in activity unavailable</span>{% endif %}
+            {% if r.flags %}<div>{{ r.flags[0].explanation }}</div>{% endif %}
+          {% elif r.flags %}
+            {{ r.flags[0].explanation }}
+            {% if r.flags|length > 1 %}
+              <details><summary>+{{ r.flags|length - 1 }} more</summary>
+                <ul>{% for f in r.flags[1:] %}<li>{{ f.explanation }}</li>{% endfor %}</ul></details>
+            {% endif %}
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  <p class="empty" id="no-match" hidden>No {{ tab }} match these filters.</p>
+  {% if not rows %}
+    <p class="empty">
+      {% if tab == 'users' %}No users holding a directory role were found (or role assignments are unavailable; see the banner above).
+      {% elif tab == 'intune' %}No Intune app is uninstall-only or unassigned (or Intune apps could not be read; see the banner above).
+      {% elif tab == 'mailboxes' %}{% if not mailboxes.available %}The mailbox list has not been read yet: press "Read mailbox list" above.{% elif counts.mailboxes_scanned == 0 %}No mailbox checked yet. Choose a scope above and press Check mailboxes.{% else %}Nothing was flagged among the {{ counts.mailboxes_scanned }} checked mailboxes.{% endif %}
+      {% elif tab == 'rules' %}No mail flow rule was flagged (or Exchange could not be read; see the banner above).
+      {% elif tab == 'dls' %}No distribution list was flagged (or Exchange could not be read; see the banner above). Check lists below to look for unused ones.
+      {% elif tab == 'members' %}No stale internal user and no disabled account with paid licences was found (or internal users could not be read; see the banner above).
+      {% elif tab == 'guests' %}No stale or pending guest was found (or guests could not be read; see the banner above).
+      {% elif tab == 'scripts' %}No script or remediation looks obsolete (or they could not be read; see the banner above).
+      {% elif tab == 'updates' %}No Windows update policy was found (or Intune could not be read; see the banner above).
+      {% elif tab == 'apps' %}No app registration was found (or applications could not be read; see the banner above).
+      {% elif counts[tab ~ '_scanned'] == 0 %}No {{ tab }} scanned yet. Choose a scope above and run a scan.
+      {% else %}Nothing was flagged among the {{ counts[tab ~ '_scanned'] }} scanned {{ tab }}.{% endif %}
+    </p>
+  {% endif %}
+{% else %}
+  <section class="empty-state">
+    <h2>No inventory yet</h2>
+    <p>Start with <strong>Refresh inventory</strong>: it lists groups, apps and roles from Microsoft Graph using a few bulk calls. Then pick which objects to scan in depth.</p>
+  </section>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='dashboard.js') }}"></script>{% endblock %}

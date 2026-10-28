@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Broom365 - sign in</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:24rem;margin:4rem auto;padding:0 1rem">
+<h1>Broom<span style="color:#0f6cbd">365</span></h1>
+{% if first_run %}<p style="background:#eef6ff;padding:8px;border-radius:6px">First start: sign in as <strong>admin</strong> with an empty
+  password. You will be asked to choose a password before anything else.</p>{% endif %}
+{% if error %}<p role="alert" style="color:#b42318">{{ error }}</p>{% endif %}
+<form method="post" action="{{ url_for('auth.login') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <p><label>Username<br><input name="username" autofocus required autocomplete="username" style="width:100%;padding:8px"></label></p>
+  <p><label>Password<br><input type="password" name="password" autocomplete="current-password" style="width:100%;padding:8px"></label></p>
+  <button type="submit" style="padding:8px 16px">Sign in</button>
+</form>
+</body></html>

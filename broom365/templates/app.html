@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% import "_detail.html" as d %}
+{% block title %}{{ app['display_name'] }} - Broom365{% endblock %}
+{% block content %}
+{{ d.head(app['display_name'], a, (app_links(app['id'], app['app_id']) + (enterprise_app_links(sp['id'], app['app_id']) if sp else []))) }}
+{% if a %}{{ d.flags(a) }}{% else %}{{ d.not_scanned('app') }}{% endif %}
+
+<section class="panel">
+  <h2>Application</h2>
+  <dl class="kv">
+    <dt>Application (client) ID</dt><dd><code>{{ app['app_id'] }}</code></dd>
+    <dt>Object ID</dt><dd><code>{{ app['id'] }}</code></dd>
+    <dt>Created</dt><dd>{{ app['created_at'] | fmt_date }} <span class="muted">{{ app['created_at'] | days_ago }}</span></dd>
+    <dt>Service principal</dt><dd>{% if sp %}{{ 'Enabled' if sp['account_enabled'] else 'Disabled' }}{% else %}<span class="st-warn">none found in this tenant</span>{% endif %}</dd>
+    <dt>Last sign-in</dt><dd>{% if not facts %}&mdash;{% elif not facts.sign_in_available %}<span class="muted">unavailable (beta endpoint or AuditLog.Read.All)</span>
+      {% elif facts.last_sign_in_at %}{{ facts.last_sign_in_at | fmt_date }} <span class="muted">{{ facts.last_sign_in_at | days_ago }}</span>
+      {% else %}no sign-in on record{% endif %}</dd>
+    <dt>Owners</dt><dd>{% if not facts %}&mdash;{% elif owners %}{{ owners | map(attribute='display_name') | join(', ') }}{% else %}<span class="st-warn">none</span>{% endif %}</dd>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>Credentials ({{ credentials | length }})</h2>
+  {% if credentials %}<table class="tbl"><thead><tr><th>Type</th><th>Name</th><th>Expires</th><th>Status</th></tr></thead><tbody>
+    {% for x in credentials %}<tr><td>{{ x.c.kind }}</td><td>{{ x.c.display_name or x.c.key_id }}</td>
+      <td>{{ x.c.end_at | fmt_date }}</td><td class="st-{{ x.status[0] }}">{{ x.status[1] }}</td></tr>{% endfor %}
+  </tbody></table>{% else %}<p class="muted">No secrets or certificates.</p>{% endif %}
+</section>
+
+{% if a %}
+<section class="panel">
+  <h2>Permissions ({{ permissions | length }})</h2>
+  {% if permissions %}<table class="tbl"><thead><tr><th>Type</th><th>Resource</th><th>Permission</th></tr></thead><tbody>
+    {% for x in permissions %}<tr class="{{ 'danger-row' if x.risky }}"><td>{{ x.p.kind }}</td><td>{{ x.p.resource_name or '—' }}</td>
+      <td><code>{{ x.p.scope }}</code>{% if x.risky %}<span class="badge-high">HIGH-RISK LIST</span>{% elif x.broad %}<span class="badge-review">BROAD READ</span>{% endif %}</td></tr>{% endfor %}
+  </tbody></table>
+  <p class="muted small">Highlighted permissions are on the configurable high-risk list; <em>broad read</em> ones expose a lot of directory data but cannot change anything. Whether an app needs them is for manual review.</p>
+  {% else %}<p class="muted">No permissions were found.</p>{% endif %}
+</section>
+{% endif %}
+
+{% if assigned_groups %}
+<section class="panel">
+  <h2>Groups assigned to this app ({{ assigned_groups | length }})</h2>
+  <ul>{% for gr in assigned_groups %}<li><a href="{{ url_for('groups.detail', oid=gr['id']) }}">{{ gr['display_name'] }}</a></li>{% endfor %}</ul>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Settings - Broom365{% endblock %}
+{% block content %}
+<h1 class="page-title">Settings</h1>
+
+{% if errors %}<div class="notice" role="alert"><strong>Not saved:</strong>
+  <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
+
+<section class="panel" id="freshness" data-syncing="{{ 'true' if syncing else 'false' }}">
+  <h2>Data freshness</h2>
+  <dl class="kv">
+    <dt>Inventory</dt><dd>{% if inventory %}{{ inventory['finished_at'][:16].replace('T', ' ') }} UTC
+      <span class="muted">({{ inventory['status'] }})</span>{% else %}never synced{% endif %}</dd>
+    <dt>Last scan</dt><dd>{% if scan %}{{ scan['finished_at'][:16].replace('T', ' ') }} UTC
+      <span class="muted">({{ scan['status'] }})</span>{% else %}no scan yet{% endif %}</dd>
+    <dt>Scanned</dt><dd>{{ counts.groups_scanned }} of {{ counts.groups_total }} groups &middot;
+      {{ counts.apps_scanned }} of {{ counts.apps_total }} apps</dd>
+  </dl>
+  <p style="margin:10px 0 0"><button type="button" id="inventory" class="btn">Re-sync inventory from Graph</button>
+    <span class="muted" id="sync-progress"></span></p>
+  <p class="muted small">Checks of groups, apps, Intune apps and scripts are started separately from the dashboard, so you control how much is read.</p>
+</section>
+
+<section class="panel">
+  <h2>Tenant connection</h2>
+  <dl class="kv">
+    <dt>Mode</dt><dd>{% if demo %}Demo data (no Entra connection){% elif mode == 'app' %}Application permissions (app-only, no user sign-in){% else %}Entra ID, delegated permissions (user sign-in){% endif %}</dd>
+    {% if demo or mode != 'app' %}<dt>Tenant ID</dt><dd><code>{{ cfg.tenant_id }}</code></dd>
+    <dt>Client ID</dt><dd><code>{{ cfg.client_id }}</code></dd>{% endif %}
+    <dt>{{ 'Identity' if mode == 'app' else 'Signed in as' }}</dt><dd>{% if demo %}&mdash;{% elif mode == 'app' %}The application itself{% else %}{{ user.get('preferred_username', 'unknown') }}{% endif %}</dd>
+    <dt>Permission check</dt><dd>
+      {% if report.status == 'ok' %}<span class="st-good">All required and optional permissions granted</span>
+      {% elif report.status == 'degraded' %}<span class="st-warn">Optional permissions missing, some signals unavailable</span>
+      {% else %}<span class="st-bad">Required permissions missing</span>{% endif %}</dd>
+  </dl>
+  {% if not demo and mode == 'app' %}
+  <form method="post" action="{{ url_for('settings.save_connection') }}" class="conn" style="margin:12px 0">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <h3 style="margin:0 0 6px">Entra app connection</h3>
+    <p class="muted small">The app registration Broom365 reads the tenant with. It is stored in the database
+      {% if encrypted %}and the client secret is encrypted with <code>BROOM_KEY</code>.{% else %}<strong>and the client secret is stored as plain text</strong>:
+      set the <code>BROOM_KEY</code> environment variable to encrypt it.{% endif %}</p>
+    {% if creds.secret_unreadable %}<p class="st-bad">The stored client secret cannot be decrypted (BROOM_KEY is missing or changed). Enter it again.</p>{% endif %}
+    <p><label>Tenant ID<br><input name="tenant_id" value="{{ creds.tenant_id }}" required size="46" autocomplete="off"></label></p>
+    <p><label>Client ID<br><input name="client_id" value="{{ creds.client_id }}" required size="46" autocomplete="off"></label></p>
+    <p><label>Client secret<br><input type="password" name="client_secret" size="46" autocomplete="new-password"
+      placeholder="{{ 'unchanged' if creds.client_secret else 'not set' }}"></label></p>
+    <button type="submit" class="btn">Save connection</button>
+  </form>{% endif %}
+  <table class="tbl" style="margin-top:10px"><thead><tr><th>Graph permission ({{ 'application' if mode == 'app' else 'delegated' }})</th><th>Needed</th><th>Granted</th><th>Used for</th></tr></thead><tbody>
+    {% for r in requirements %}{% set ok = r.scope.lower() in granted or (r.satisfied_by | map('lower') | select('in', granted) | list | length > 0) %}
+    <tr><td><code>{{ r.scope }}</code></td><td>{{ 'required' if r.required else 'optional' }}</td>
+      <td class="{{ 'st-good' if ok else ('st-bad' if r.required else 'st-warn') }}">{{ 'yes' if ok else 'missing' }}</td>
+      <td class="muted">{{ r.enables }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% if report.status != 'ok' and not demo %}<p><a href="{{ url_for('auth.permissions') }}">How to fix missing permissions</a></p>{% endif %}
+</section>
+
+<section class="panel" id="validation">
+  <h2>Validate permissions</h2>
+  <p class="muted small">Re-reads the permissions granted to the app, then makes one small real call to every data source Broom365
+    uses. For each failure it names the exact permission to add, or says when the permission is fine and the cause is something else.</p>
+  <form method="post" action="{{ url_for('settings.validate') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn" {% if demo %}disabled title="Needs a real tenant connection"{% endif %}>Validate permissions</button>
+    <span class="muted small">Takes a few seconds.</span>
+  </form>
+  {% if validation %}
+    <p class="muted small" style="margin-top:12px">Checked {{ validation.at.strftime('%Y-%m-%d %H:%M:%S') }} UTC &middot;
+      {{ validation.granted | length }} {{ validation.perm_type | lower }} permission(s) in the token.</p>
+    {% if validation.token_error %}
+      <div class="notice"><strong>No token could be obtained:</strong> {{ validation.token_error }}<br>
+        Check <code>TENANT_ID</code>, <code>CLIENT_ID</code> and <code>CLIENT_SECRET</code> (the secret's Value, not expired).</div>
+    {% else %}
+      {% if validation.missing %}
+        <div class="notice" role="alert"><strong>Add these {{ validation.perm_type }} permissions (Microsoft Graph) and grant admin consent:</strong>
+          <ul>{% for m in validation.missing %}<li><code>{{ m }}</code></li>{% endfor %}</ul></div>
+      {% endif %}
+      <table class="tbl"><thead><tr><th>Data source</th><th>Permission</th><th>Result</th></tr></thead><tbody>
+      {% for r in validation.results | sort(attribute='ok') %}
+        <tr><td>{{ r.probe.label }}</td>
+          <td><code>{{ r.probe.permission }}</code><div class="small {{ 'st-good' if r.permission_granted else 'st-bad' }}">{{ 'granted' if r.permission_granted else 'not granted' }}</div></td>
+          <td>{% if r.ok %}<span class="st-good">OK</span>
+              {% else %}<span class="{{ 'st-bad' if r.status in ('missing', 'denied') else 'st-warn' }}">
+                {{ {'missing': 'Permission missing', 'denied': 'Granted but denied', 'rejected': 'Request rejected', 'not_found': 'Not found', 'error': 'Error'}[r.status] }}
+                {% if r.http %}(HTTP {{ r.http }}){% endif %}</span>
+                <div class="muted small">{{ r.advice }}</div>{% endif %}</td></tr>
+      {% endfor %}
+      </tbody></table>
+    {% endif %}
+  {% endif %}
+</section>
+
+<form method="post" action="{{ url_for('settings.save') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <section class="panel">
+    <h2>Thresholds</h2>
+    <table class="tbl"><tbody>
+    {% for key, label, help in fields %}
+      <tr><td><label for="{{ key }}">{{ label }}</label><div class="muted small">{{ help }}</div></td>
+        <td><input type="number" min="1" max="3650" id="{{ key }}" name="{{ key }}" value="{{ values[key] }}" required class="num-in">
+          <span class="muted small">default {{ defaults[key] }}</span></td></tr>
+    {% endfor %}
+    </tbody></table>
+  </section>
+  <section class="panel">
+    <h2>High-risk permissions</h2>
+    <p class="muted small">One Microsoft Graph permission per line (matched by exact name, delegated or application). Apps holding any of these
+      are flagged for review (DANGEROUS_PERMISSION); this does not say the permission is unnecessary. The built-in list has
+      {{ default_scopes | length }} permissions and comes back after <em>Delete database</em> or the button below. Your edits are saved with <em>Save</em>.</p>
+    <textarea name="high_risk_scopes" id="high-risk-scopes" rows="10" class="scopes-text" aria-label="High-risk permissions">{{ scopes_text }}</textarea>
+    <p><button type="button" class="btn secondary" id="restore-scopes">Restore the built-in list ({{ default_scopes | length }})</button>
+      <span class="muted small">fills the box; press Save to keep it</span></p>
+    <details><summary class="muted small">Show the built-in list</summary>
+      <p class="small"><code>{{ default_scopes | join('</code> <code>') | safe }}</code></p></details>
+  </section>
+  <section class="panel">
+    <h2>Broad read permissions (to review)</h2>
+    <p class="muted small">Reads of directory <em>metadata</em> that expose a lot but not mail, files or chats, and that many legitimate products need
+      (BROAD_READ_PERMISSION). Lighter than the list above. A permission on both lists counts as high-risk.
+      Built-in: {{ default_broad | length }} permissions.</p>
+    <textarea name="broad_read_scopes" id="broad-read-scopes" rows="6" class="scopes-text" aria-label="Broad read permissions">{{ broad_text }}</textarea>
+    <p><button type="button" class="btn secondary" id="restore-broad">Restore the built-in list ({{ default_broad | length }})</button></p>
+  </section>
+  <p><button type="submit" class="btn">Save and recompute flags</button>
+    <span class="muted small">Recomputing uses stored data only; nothing is read from Graph.</span></p>
+</form>
+
+<section class="panel">
+  <h2>Signals</h2>
+  <p class="muted small">Signals that cannot be read in this tenant are skipped, never guessed. Related flags are absent, not clean.</p>
+  <table class="tbl"><thead><tr><th>Signal</th><th>Status</th><th>What it affects</th></tr></thead><tbody>
+  {% for s in signals %}<tr>
+    <td><code>{{ s.name }}</code></td>
+    <td>{% if s.row is none %}<span class="muted">not checked yet</span>
+        {% elif s.row['available'] %}<span class="st-good">available</span>
+        {% else %}<span class="st-bad">unavailable</span><div class="muted small">{{ s.row['reason'] }}</div>{% endif %}</td>
+    <td class="muted">{{ s.info }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+<section class="panel danger" id="reset">
+  <h2>Delete database</h2>
+  <p class="muted small">Deletes everything Broom365 stored locally: inventory, scans, flags, saved thresholds and scope patterns.
+    Nothing in your tenant is touched (Broom365 is read-only). You can rebuild it with <em>Refresh inventory</em>.</p>
+  <form method="post" action="{{ url_for('settings.reset') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label for="confirm" class="small">Type <strong>DELETE</strong> to confirm</label>
+    <input type="text" id="confirm" name="confirm" autocomplete="off" class="num-in" style="width:9em" required>
+    <button type="submit" class="btn btn-danger" {% if syncing %}disabled title="A sync is running"{% endif %}>Delete database</button>
+  </form>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+<script>
+  document.getElementById('restore-scopes').addEventListener('click', function () {
+    document.getElementById('high-risk-scopes').value = {{ default_scopes | list | tojson }}.join('\n');
+  });
+  document.getElementById('restore-broad').addEventListener('click', function () {
+    document.getElementById('broad-read-scopes').value = {{ default_broad | list | tojson }}.join('\n');
+  });
+</script>{% endblock %}

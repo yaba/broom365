@@ -1,0 +1,60 @@
+# Broom365 as one container.
+#
+#   docker compose up --build        ->  http://localhost:5000   (sign in as admin with an empty password, then set one)
+#
+# Database: set DATABASE_URL (in .env) to use an external SQL Server. Without it Broom365 keeps a SQLite file in the
+# `broom-data` volume, together with the sessions.
+#
+# For a throw-away SQL Server while developing, enable the optional `mssql` profile and point DATABASE_URL at it:
+#   MSSQL_SA_PASSWORD=...  DATABASE_URL="mssql+pyodbc://sa:...@mssql:1433/broom365?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+#   docker compose --profile mssql up --build
+#
+# Images: BASE_IMAGE (Python + ODBC driver; the Dockerfile installs the driver when the base lacks it) and MSSQL_IMAGE can be
+# pointed at your own registry (see .env.example.docker).
+services:
+  broom365:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim-bookworm}
+    image: ${BROOM_IMAGE:-broom365:latest}
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-}
+      BROOM_KEY: ${BROOM_KEY:-}
+    volumes:
+      - broom-data:/app/instance
+    restart: unless-stopped
+
+  mssql:
+    profiles: ["mssql"]
+    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-}
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # Creates the empty database once; Broom365 creates its tables on start.
+  mssql-init:
+    profiles: ["mssql"]
+    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
+    depends_on:
+      mssql:
+        condition: service_healthy
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-}
+    command: >
+      /bin/bash -c "/opt/mssql-tools18/bin/sqlcmd -C -S mssql -U sa -P \"$$MSSQL_SA_PASSWORD\"
+      -Q \"IF DB_ID('broom365') IS NULL CREATE DATABASE broom365\""
+    restart: "no"
+
+volumes:
+  broom-data:
+  mssql-data:
