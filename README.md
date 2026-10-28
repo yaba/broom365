@@ -1,5 +1,7 @@
 # Broom365
 
+Source: <https://github.com/yaba/broom365> · MIT licence
+
 A **read-only** visual tool for Microsoft 365 / Entra ID administrators that finds orphaned, stale and risky
 objects by **correlating** data that Entra and Intune show separately: groups whose application no longer
 exists, apps with expired secrets nobody uses, apps holding dangerous permissions without recent activity,
@@ -76,7 +78,8 @@ docker run -d -p 5000:5000   -e "DATABASE_URL=mssql+pyodbc://user:password@host:
 
 Those two variables are all the container needs: the Entra connection and the accounts live in the database. The user needs full
 access to that database (Broom365 creates its tables on start). Open <http://host:5000>, sign in as `admin` with an empty password and
-set one straight away (see *Accounts*). Start from your own base image with `--build-arg BASE_IMAGE=...` (Python 3.11+; the Dockerfile installs the Microsoft ODBC driver when the base lacks it, so building
+set one straight away (see *Accounts*). The image contains Microsoft's ODBC driver, which Microsoft's licence does not clearly allow you to redistribute publicly: build it yourself and keep it in a private
+registry rather than publishing it. Start from your own base image with `--build-arg BASE_IMAGE=...` (Python 3.11+; the Dockerfile installs the Microsoft ODBC driver when the base lacks it, so building
 accepts Microsoft's licence terms for that driver).
 
 SQL Server is optional. Without `DATABASE_URL` Broom365 keeps a SQLite file (and the sessions) in `/app/instance`; mount a volume
