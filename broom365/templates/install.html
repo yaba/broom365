@@ -41,7 +41,7 @@
         <div class="narrow"><label>Port<input type="text" name="port" value="{{ values.port or '' }}" inputmode="numeric"></label></div>
       </div>
       <label>Database name<input type="text" name="database" value="{{ values.database or '' }}"></label>
-      <p class="hint">The database must already exist; Broom365 creates its tables in it.</p>
+      <p class="hint">The database must already exist; Broom365 creates its tables in it. The user needs <code>db_owner</code>, or <code>db_ddladmin</code> + <code>db_datareader</code> + <code>db_datawriter</code>, on that database only.</p>
       <div class="row">
         <div><label>User<input type="text" name="user" value="{{ values.user or '' }}" autocomplete="off"></label></div>
         <div><label>Password<input type="password" name="db_password" autocomplete="new-password"></label></div>

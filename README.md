@@ -84,7 +84,18 @@ docker run -d -p 5000:5000 -v broom-data:/app/instance broom365
 
 Open <http://host:5000>: the installer asks where the data goes (SQL Server or SQLite), for the key and the admin password, then the app asks for the Microsoft 365 connection.
 **Keep `/app/instance` on a volume**: it holds `bootstrap.json` (database settings and key) and the sessions, and the SQLite file when you choose it. Without a volume the installer comes back after
-every re-created container. The database user needs full access to its database (Broom365 creates its tables).
+every re-created container. The database user needs, on that database only, `db_owner` or `db_ddladmin` + `db_datareader` + `db_datawriter` (Broom365 creates its tables and indexes at start, and a second start changes nothing); no server-level rights, and no access to the system catalog views, which hardened servers often deny:
+
+```sql
+CREATE LOGIN broom365 WITH PASSWORD = '...';
+USE [broom365db];
+CREATE USER broom365 FOR LOGIN broom365;
+ALTER ROLE db_ddladmin ADD MEMBER broom365;
+ALTER ROLE db_datareader ADD MEMBER broom365;
+ALTER ROLE db_datawriter ADD MEMBER broom365;
+```
+
+Tables are created in the user's default schema, normally `dbo`; give the user `ALTER ON SCHEMA::dbo` if `CREATE TABLE` is refused there.
 
 Environment variables are optional now and win over what the installer saved: `DATABASE_URL` and `BROOM_KEY` (handy for automated deployments). `DATABASE_URL` accepts any ODBC option:
 `mssql+pyodbc://user:password@host:1433/database?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no`. A named instance is written `host%5Cinstance`; user and password are optional

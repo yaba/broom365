@@ -31,7 +31,7 @@ def test_every_table_is_translated_with_bounded_key_columns():
     sc = translate_schema(SCHEMA)
     assert len(re.findall(r"CREATE TABLE", SCHEMA)) == sum("CREATE TABLE" in s for s in sc.statements)
     text = "\n".join(sc.statements)
-    assert "AUTOINCREMENT" not in text and "COLLATE" not in text and "IF NOT EXISTS (SELECT 1 FROM sys.indexes" in text
+    assert "AUTOINCREMENT" not in text and "COLLATE" not in text
     assert "[username] NVARCHAR(128) NOT NULL UNIQUE" in text   # a unique column cannot be NVARCHAR(MAX)
     assert "[id] INT IDENTITY(1,1) PRIMARY KEY" in text and sc.identity == {"sync_runs", "flags", "remediation_actions", "app_users"}
     # a key column can never be NVARCHAR(MAX): SQL Server cannot index it
@@ -161,3 +161,32 @@ def test_values_with_semicolons_are_braced_and_a_dsn_keeps_its_own_encryption_se
     assert "TrustServerCertificate" not in odbc_connection_string("mssql+pyodbc:///?odbc_connect=DSN%3Dprod")
     raw = odbc_connection_string("mssql+pyodbc:///?odbc_connect=DRIVER={ODBC+Driver+18+for+SQL+Server};SERVER=h,1981;DATABASE=d;UID=u;PWD=p#1;Encrypt=no")
     assert raw == "DRIVER={ODBC Driver 18 for SQL Server};SERVER=h,1981;DATABASE=d;UID=u;PWD=p#1;Encrypt=no"      # '#' is not cut off
+
+
+def test_the_ddl_never_reads_the_catalog_views_so_a_hardened_server_cannot_block_it():
+    sc = translate_schema(SCHEMA)
+    text = chr(10).join(sc.statements)
+    assert "sys." not in text and "INFORMATION_SCHEMA" not in text and "OBJECT_ID" not in text
+    assert text.count("ERROR_NUMBER() <> 2714") == len(sc.tables) and "ERROR_NUMBER() <> 1913" in text     # "already exists" is caught, the rest raised
+    assert sc.tables.index("flagged_objects") < sc.tables.index("flags") and sc.tables.index("groups") < sc.tables.index("group_owners")
+
+
+def test_drop_all_drops_children_first_keeps_what_is_asked_and_reads_no_catalog():
+    from broom365.database import MssqlConnection
+
+    class Fake:
+        def __init__(self):
+            self.sql = []
+
+        def execute(self, sql, *a):
+            self.sql.append(sql)
+
+        def commit(self):
+            self.sql.append("COMMIT")
+
+    c = MssqlConnection.__new__(MssqlConnection)
+    c._c, c._schema = Fake(), translate_schema(SCHEMA)
+    c.drop_all(keep=("app_users", "app_config"))
+    dropped = [re.search(r"DROP TABLE \[(\w+)\]", q).group(1) for q in c._c.sql if "DROP TABLE" in q]
+    assert "app_users" not in dropped and "app_config" not in dropped and dropped == [t for t in reversed(c._schema.tables) if t not in ("app_users", "app_config")]
+    assert dropped.index("flags") < dropped.index("flagged_objects") and not any("sys." in q for q in c._c.sql) and c._c.autocommit is False

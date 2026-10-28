@@ -147,6 +147,7 @@ class Schema:
         self.pk: dict[str, list[str]] = {}
         self.identity: set[str] = set()  # tables with an auto-increment id (lastrowid is available for them)
         self.statements: list[str] = []
+        self.tables: list[str] = []      # in creation order: a table is created after the ones it references
 
 
 def translate_schema(sql: str) -> Schema:
@@ -223,10 +224,14 @@ def translate_schema(sql: str) -> Schema:
                 cols.append(it)
             else:
                 cols.append(column(name, it))
-        out.statements.append(f"IF OBJECT_ID(N'{name}', N'U') IS NULL CREATE TABLE [{name}] (\n  " + ",\n  ".join(cols) + "\n)")
+        # "already exists" (2714) is expected on every start after the first: it is caught instead of looked up in the catalog views, because a
+        # hardened server may deny them to the database user. Any other error is raised.
+        out.statements.append(f"BEGIN TRY CREATE TABLE [{name}] (\n  " + ",\n  ".join(cols)
+                              + "\n) END TRY BEGIN CATCH IF ERROR_NUMBER() <> 2714 THROW; END CATCH")
+        out.tables.append(name)
     for ix, table, cols in indexes:
-        out.statements.append(f"IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'{ix}' AND object_id = OBJECT_ID(N'{table}')) "
-                              f"CREATE INDEX [{ix}] ON [{table}] ({', '.join(f'[{c}]' for c in cols)})")
+        out.statements.append(f"BEGIN TRY CREATE INDEX [{ix}] ON [{table}] ({', '.join(f'[{c}]' for c in cols)}) END TRY "
+                              "BEGIN CATCH IF ERROR_NUMBER() <> 1913 THROW; END CATCH")     # 1913: the index already exists
     return out
 
 
@@ -362,9 +367,18 @@ class MssqlConnection:
         return Cursor([], len(data))
 
     def executescript(self, script: str) -> None:
-        for stmt in translate_schema(script).statements:
-            self._c.execute(stmt)
+        self._ddl(translate_schema(script).statements)
+
+    def _ddl(self, statements: Iterable[str]) -> None:
+        """Run DDL one statement at a time, each in its own transaction: an "already exists" error that the statement catches would otherwise
+        leave an open transaction uncommittable."""
         self._c.commit()
+        self._c.autocommit = True
+        try:
+            for stmt in statements:
+                self._c.execute(stmt)
+        finally:
+            self._c.autocommit = False
 
     def commit(self) -> None:
         self._c.commit()
@@ -376,17 +390,9 @@ class MssqlConnection:
         self._c.close()
 
     def drop_all(self, keep: Sequence[str] = ()) -> None:
-        """Drop every table except those in `keep` (foreign keys first)."""
-        cur = self._c.cursor()
-        cur.execute("SELECT OBJECT_NAME(parent_object_id), name FROM sys.foreign_keys")
-        for table, fk in cur.fetchall():
-            if table not in keep:
-                self._c.execute(f"ALTER TABLE [{table}] DROP CONSTRAINT [{fk}]")
-        cur.execute("SELECT name FROM sys.tables")
-        for (name,) in cur.fetchall():
-            if name not in keep:
-                self._c.execute(f"DROP TABLE [{name}]")
-        self._c.commit()
+        """Drop every table of the schema except those in `keep` (children before the tables they reference, no catalog views needed)."""
+        self._ddl(f"BEGIN TRY DROP TABLE [{name}] END TRY BEGIN CATCH IF ERROR_NUMBER() <> 3701 THROW; END CATCH"     # 3701: it does not exist
+                  for name in reversed(self._schema.tables) if name not in keep)
 
 
 def _schema_text() -> str:
