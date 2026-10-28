@@ -110,3 +110,20 @@ def test_demo_pipeline_gives_the_same_flags_on_sql_server_as_on_sqlite(tmp_path,
     from broom365.db import reset_database
     reset_database(ms)
     assert ms.execute("SELECT COUNT(*) FROM groups").fetchone()[0] == 0
+
+
+def test_a_password_with_url_special_characters_works_without_encoding():
+    raw = odbc_connection_string("mssql+pyodbc://sa:VaSS0uRa#x/y?z:w@v@db.local:1433/broom?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes")
+    assert raw == ("DRIVER={ODBC Driver 18 for SQL Server};SERVER=db.local,1433;DATABASE=broom;UID=sa;PWD={VaSS0uRa#x/y?z:w@v};"
+                   "TrustServerCertificate=yes")
+    assert "PWD={a%b}" in odbc_connection_string("mssql+pyodbc://u:a%b@h/db")            # a stray % stays as typed
+    assert "PWD={a%b}" in odbc_connection_string("mssql+pyodbc://u:a%25b@h/db")          # an encoded one is decoded
+    assert odbc_connection_string("mssql+pyodbc://u:p@h").startswith("DRIVER={ODBC Driver 18 for SQL Server};SERVER=h;UID=u")
+    assert "SERVER=db.local,1433;" in odbc_connection_string("mssql+pyodbc://u:p@db.local:1433/x")
+
+
+def test_a_bad_url_error_never_repeats_the_password():
+    for bad in ("mssql+pyodbc://sa:SECRETpw@host:notaport/db", "no-scheme-at-all-SECRETpw"):
+        with pytest.raises(ValueError) as e:
+            odbc_connection_string(bad)
+        assert "SECRETpw" not in str(e.value)

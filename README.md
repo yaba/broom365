@@ -98,7 +98,7 @@ job runs in-process, one at a time. The Python test suite also passes inside the
 | `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` | Optional development fallback for the Entra connection (normally entered in Settings) |
 | `SECRET_KEY` | Optional; the session signing key. If unset, one is generated once and kept in the database |
 | `DATABASE_PATH` | SQLite file (default `instance/broom365.sqlite`) |
-| `DATABASE_URL` | Production database, e.g. `mssql+pyodbc://user:password@host:1433/broom365?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes`. Overrides `DATABASE_PATH`. Needs the Microsoft ODBC driver and `pyodbc`; tables are created on start. SQLite stays the default for development and tests |
+| `DATABASE_URL` | Production database, e.g. `mssql+pyodbc://user:password@host:1433/broom365?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes`. Overrides `DATABASE_PATH`. The password may contain special characters (`# / ? @ :`) as typed; only a literal `%` should be written `%25`. Needs the Microsoft ODBC driver and `pyodbc`; tables are created on start. SQLite stays the default for development and tests |
 | `AUTH_MODE` | `app` (default, app-only) or `delegated` (interactive user sign-in) |
 | `REDIRECT_URI` | `delegated` mode only; must match the registered redirect URI, e.g. `http://localhost:5000/auth/callback` |
 

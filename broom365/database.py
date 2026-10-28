@@ -32,21 +32,42 @@ def sqlite_path(url: str) -> str:
     return url
 
 
+_URL_TAIL = re.compile(r"([^/?#]*)(/[^?#]*)?(\?.*)?$", re.S)
+
+
 def odbc_connection_string(url: str) -> str:
-    """Turn a SQLAlchemy-style `mssql+pyodbc://` URL into an ODBC connection string."""
-    parts = urlsplit(url)
-    query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    if "odbc_connect" in query:
-        return query["odbc_connect"]
+    """Turn a SQLAlchemy-style `mssql+pyodbc://` URL into an ODBC connection string.
+
+    The credentials end at the LAST `@`, so a password may contain `@`, `/`, `?`, `#` or `:` even when it is not percent-encoded
+    (percent-encoded characters are decoded). Errors never repeat any part of the URL, because it holds the password.
+    """
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        raise ValueError("DATABASE_URL must look like mssql+pyodbc://user:password@host:1433/database?driver=...")
+    if "odbc_connect=" in rest:
+        query = dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
+        if "odbc_connect" in query:
+            return query["odbc_connect"]
+    userinfo, at, tail = rest.rpartition("@")
+    if not at:
+        userinfo, tail = "", rest
+    m = _URL_TAIL.match(tail)
+    hostport, path, query_text = (m.group(1), m.group(2) or "", (m.group(3) or "")[1:]) if m else ("", "", "")
+    host, colon, port = hostport.rpartition(":")
+    if not colon or "]" in port:
+        host, port = hostport, ""
+    elif not port.isdigit():
+        raise ValueError("DATABASE_URL has a port that is not a number (check the host part; a password with special characters "
+                         "such as # / ? @ : % is fine, but a literal % must be written %25)")
+    query = dict(parse_qsl(query_text, keep_blank_values=True))
     driver = query.pop("driver", "ODBC Driver 18 for SQL Server")
-    host = parts.hostname or "localhost"
-    server = f"{host},{parts.port}" if parts.port else host
-    out = [f"DRIVER={{{driver}}}", f"SERVER={server}"]
-    if parts.path.strip("/"):
-        out.append(f"DATABASE={unquote(parts.path.strip('/'))}")
-    if parts.username is not None:
-        out.append(f"UID={unquote(parts.username)}")
-        out.append(f"PWD={{{unquote(parts.password or '').replace('}', '}}')}}}")  # braces keep ; and = in a password safe
+    out = [f"DRIVER={{{driver}}}", f"SERVER={(host or 'localhost')},{port}" if port else f"SERVER={host or 'localhost'}"]
+    if path.strip("/"):
+        out.append(f"DATABASE={unquote(path.strip('/'))}")
+    if at:
+        user, _, password = userinfo.partition(":")
+        out.append(f"UID={unquote(user)}")
+        out.append(f"PWD={{{unquote(password).replace('}', '}}')}}}")  # braces keep ; and = in a password safe
     out.extend(f"{k}={v}" for k, v in query.items())
     return ";".join(out)
 
