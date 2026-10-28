@@ -7,7 +7,7 @@
 {% if error %}
 <p><strong>Broom365 could not get a token for the application</strong> (<code>{{ client_id }}</code>):</p>
 <pre style="white-space:pre-wrap;background:#f4f4f4;padding:8px;border-radius:6px">{{ error }}</pre>
-<p>Check <code>TENANT_ID</code>, <code>CLIENT_ID</code> and <code>CLIENT_SECRET</code> in <code>.env</code> (use the secret's
+<p>Check the tenant ID, client ID and client secret on the <a href="{{ url_for('connect.show') }}">connect page</a> (use the secret's
 <em>Value</em>, and make sure it has not expired), then <a href="{{ url_for('auth.permissions', recheck=1) }}">re-check</a>.</p>
 {% else %}
   {% if report.status == "blocked" %}

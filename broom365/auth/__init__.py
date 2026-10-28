@@ -241,6 +241,11 @@ def login_required(view: F) -> F:
         if is_app_mode():
             if (gate := _access_gate()) is not None:
                 return gate
+            if not credentials().complete:
+                acc = current_account()
+                if acc is not None and acc.is_admin:
+                    return redirect(url_for("connect.show"))
+                abort(503, "Setup is not finished: an admin has to connect Broom365 to Microsoft 365 first.")
             status = _tokens().state().report.status
         else:
             if "user" not in session:

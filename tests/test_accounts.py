@@ -135,7 +135,8 @@ def test_first_start_explains_how_to_sign_in_and_forces_a_password(make):
         assert c.get(path).headers["Location"].endswith("/account/password"), path
     assert choose_password(c, "short").status_code == 400
     assert choose_password(c, GOOD).status_code == 302
-    assert c.get("/").status_code == 200 and "First start" not in make().get("/login").get_data(as_text=True)
+    assert c.get("/").headers["Location"].endswith("/connect")           # next: connect to Microsoft 365
+    assert c.get("/connect").status_code == 200 and "First start" not in make().get("/login").get_data(as_text=True)
 
 
 def test_the_two_new_passwords_must_match(make):
@@ -162,6 +163,7 @@ def test_changing_your_password_needs_the_current_one(admin):
 
 
 def test_admin_creates_a_reader_who_must_change_the_temporary_password(admin, make):
+    connect(admin)                                   # readers only get in once the Microsoft 365 connection exists
     r = admin.post("/accounts/add", data={"username": "ana", "password": "temporary-pass-1", "role": "reader", "csrf_token": csrf(admin, "/accounts")})
     assert r.status_code == 302
     reader = make()
@@ -172,6 +174,7 @@ def test_admin_creates_a_reader_who_must_change_the_temporary_password(admin, ma
 
 
 def test_a_reader_can_view_and_run_checks_but_not_administer(admin, make):
+    connect(admin)                                   # readers only get in once the Microsoft 365 connection exists
     admin.post("/accounts/add", data={"username": "ana", "password": "temporary-pass-1", "role": "reader", "csrf_token": csrf(admin, "/accounts")})
     reader = make()
     sign_in(reader, "ana", "temporary-pass-1")
@@ -284,7 +287,9 @@ def test_without_a_connection_the_dashboard_explains_what_to_do(monkeypatch, cfg
     sign_in(c, "admin", "")
     choose_password(c)
     r = c.get("/")
-    assert r.headers["Location"].endswith("/permissions")
+    assert r.headers["Location"].endswith("/connect")
+    page = c.get("/connect").get_data(as_text=True)
+    assert "Connect to Microsoft 365" in page and "Permissions" not in page      # nothing to check before a connection exists
     assert "not configured yet" in c.get("/permissions").get_data(as_text=True)
     assert c.get("/settings").status_code == 200                      # Settings stays reachable to fix it
 
@@ -296,3 +301,14 @@ def test_deleting_the_database_keeps_accounts_and_the_connection(admin, cfg):
     c = sqlite3.connect(cfg.database_path)
     assert c.execute("SELECT COUNT(*) FROM app_users").fetchone()[0] == 2 and stored(cfg, "azure_tenant_id") == TENANT
     assert admin.get("/").status_code == 200
+
+
+def test_readers_wait_for_an_admin_to_finish_the_setup(admin, make):
+    admin.post("/accounts/add", data={"username": "ana", "password": "temporary-pass-1", "role": "reader", "csrf_token": csrf(admin, "/accounts")})
+    reader = make()
+    sign_in(reader, "ana", "temporary-pass-1")
+    choose_password(reader, "ana's own password", current="temporary-pass-1")
+    r = reader.get("/")
+    assert r.status_code == 503 and "an admin has to connect Broom365" in r.get_data(as_text=True)
+    connect(admin)
+    assert reader.get("/").status_code == 200

@@ -194,10 +194,6 @@ def reset() -> Response:
     return redirect(url_for("settings.show"))
 
 
-_GUID = re.compile(r"^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
-_DOMAIN = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
-
-
 @bp.post("/settings/connection")
 @admin_required
 def save_connection() -> Response:
@@ -205,13 +201,7 @@ def save_connection() -> Response:
     tenant = request.form.get("tenant_id", "").strip()
     client = request.form.get("client_id", "").strip()
     secret = request.form.get("client_secret", "").strip()
-    problems = []
-    if not (_GUID.match(tenant) or _DOMAIN.match(tenant)):
-        problems.append("Tenant ID must be a GUID or a domain such as contoso.onmicrosoft.com.")
-    if not _GUID.match(client):
-        problems.append("Client ID must be a GUID (Application (client) ID of the app registration).")
-    if not secret and not credentials().client_secret:
-        problems.append("Enter the client secret (its Value, not its ID).")
+    problems = appconfig.validate_connection(tenant, client, secret, bool(credentials().client_secret))
     if problems:
         for m in problems:
             flash(m)

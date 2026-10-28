@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ 'Broom365 - database connection' if repair else 'Broom365 - install' }}</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem 3rem; line-height: 1.45; color: #1b1b1b; }
+  h1 span { color: #0f6cbd; }
+  fieldset { border: 1px solid #d0d0d0; border-radius: 8px; margin: 1.2rem 0; padding: .6rem 1rem 1rem; }
+  legend { font-weight: 600; padding: 0 .4rem; }
+  label { display: block; margin: .6rem 0 0; }
+  input[type=text], input[type=password], select, textarea { width: 100%; padding: 8px; box-sizing: border-box; font: inherit; }
+  .row { display: flex; gap: .8rem; } .row > div { flex: 1; } .row > div.narrow { flex: 0 0 7rem; }
+  .hint { color: #555; font-size: .9rem; margin: .2rem 0 0; }
+  .problems { background: #fdecea; border: 1px solid #f1b0a8; color: #7a1a10; border-radius: 6px; padding: .6rem 1rem; }
+  .problems ul { margin: .2rem 0; padding-left: 1.2rem; }
+  button { padding: 10px 22px; font: inherit; font-weight: 600; cursor: pointer; }
+  code { background: #f2f2f2; padding: 1px 4px; border-radius: 4px; }
+  details { margin-top: .8rem; }
+</style></head>
+<body>
+<h1>Broom<span>365</span></h1>
+{% if repair %}
+  <h2>The database connection does not work</h2>
+  <p>Broom365 has saved settings, but it cannot use them. Fix them below; nothing else is lost.</p>
+{% else %}
+  <h2>Install</h2>
+  <p>Three quick steps: where to keep the data, an encryption key, and the admin password. Then you connect Broom365 to your Microsoft 365 tenant.</p>
+{% endif %}
+{% if problems %}<div class="problems" role="alert"><ul>{% for p in problems %}<li>{{ p }}</li>{% endfor %}</ul></div>{% endif %}
+
+<form method="post" autocomplete="off">
+  <input type="hidden" name="csrf_token" value="{{ csrf }}">
+
+  <fieldset>
+    <legend>1. Database</legend>
+    <label><input type="radio" name="storage" value="mssql" {{ 'checked' if values.storage != 'sqlite' }}> SQL Server (recommended for a shared server)</label>
+    <div id="mssql">
+      <div class="row">
+        <div><label>Server<input type="text" name="server" value="{{ values.server or '' }}" placeholder="sqlhost  or  sqlhost\INSTANCE"></label></div>
+        <div class="narrow"><label>Port<input type="text" name="port" value="{{ values.port or '' }}" inputmode="numeric"></label></div>
+      </div>
+      <label>Database name<input type="text" name="database" value="{{ values.database or '' }}"></label>
+      <p class="hint">The database must already exist; Broom365 creates its tables in it.</p>
+      <div class="row">
+        <div><label>User<input type="text" name="user" value="{{ values.user or '' }}" autocomplete="off"></label></div>
+        <div><label>Password<input type="password" name="db_password" autocomplete="new-password"></label></div>
+      </div>
+      <label>Encryption of the connection
+        <select name="encryption">{% for k, label in modes.items() %}<option value="{{ k }}" {{ 'selected' if values.encryption == k }}>{{ label }}</option>{% endfor %}</select></label>
+      <details {{ 'open' if values.extra }}><summary>More options</summary>
+        <label>Extra ODBC options, one per line<textarea name="extra" rows="3" placeholder="ApplicationIntent=ReadOnly&#10;Connection Timeout=15">{{ values.extra or '' }}</textarea></label>
+        <p class="hint">Any option of the Microsoft ODBC driver, written <code>Name=value</code>.</p>
+      </details>
+    </div>
+    <label><input type="radio" name="storage" value="sqlite" {{ 'checked' if values.storage == 'sqlite' }}> SQLite, a file on this server</label>
+    <p class="hint" id="sqlite-hint">Simple and enough for one person or a small team. The data goes to <code>{{ sqlite_file }}</code>; in Docker keep that folder on a volume.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>2. Encryption key</legend>
+    <label>Key<input type="text" name="key" value="{{ values.key }}" spellcheck="false"></label>
+    <p class="hint">Protects the Microsoft 365 client secret that Broom365 stores in the database. A random one is suggested. It is saved on this server in
+      <code>{{ where }}</code>. Keep a copy somewhere safe: without it the stored secret cannot be read again.</p>
+  </fieldset>
+
+  {% if not repair %}
+  <fieldset>
+    <legend>3. Admin password</legend>
+    <div class="row">
+      <div><label>Password<input type="password" name="admin_password" autocomplete="new-password"></label></div>
+      <div><label>Repeat it<input type="password" name="admin_password2" autocomplete="new-password"></label></div>
+    </div>
+    <p class="hint">For the account <code>admin</code>, at least 10 characters. You can add more accounts later.</p>
+  </fieldset>
+  {% endif %}
+
+  <button type="submit">{{ 'Save and try again' if repair else 'Install' }}</button>
+</form>
+
+<script>
+  (function () {
+    var radios = document.querySelectorAll('input[name=storage]');
+    function sync() {
+      var sqlite = document.querySelector('input[name=storage]:checked').value === 'sqlite';
+      document.getElementById('mssql').style.display = sqlite ? 'none' : '';
+      document.getElementById('sqlite-hint').style.display = sqlite ? '' : 'none';
+    }
+    radios.forEach(function (r) { r.addEventListener('change', sync); });
+    sync();
+  })();
+</script>
+</body></html>

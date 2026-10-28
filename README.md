@@ -37,9 +37,16 @@ The demo database lives in `instance/demo.sqlite`; delete `instance/` to reset i
 ### Run against your tenant
 
 1. Register the app (below) and grant the permissions.
-2. `.venv\Scripts\python -m flask --app run run` (without `BROOM_DEMO`) and open <http://localhost:5000>.
-3. Sign in as `admin` with an **empty password**; Broom365 makes you choose one (at least 10 characters) before anything else.
-4. In **Settings**, enter the tenant ID, client ID and client secret of the app registration and press *Save connection*.
+2. Start Broom365 and open <http://localhost:5000>: `python -m broom365.wsgi` (or the Docker image, below). The first time it shows the **installer**:
+   - **Database**: SQL Server (server, port, database, user, password; the database must already exist) or a SQLite file on this machine. It tests the connection before saving anything and says in plain words what is wrong.
+   - **Encryption key**: a random one is suggested; it protects the client secret kept in the database. Keep a copy.
+   - **Admin password** for the account `admin`.
+3. Sign in, and Broom365 asks for the **tenant ID, client ID and client secret** of the app registration, reads the permissions the app really has, and tells you which are missing
+   (required ones block, optional ones only switch off some signals). When all is well it opens the dashboard.
+
+There is no environment file to write: the installer saves its choices in `instance/bootstrap.json` (readable only by the app's user), and the Entra connection lives in the database,
+editable later in **Settings**. If the database stops answering, Broom365 opens the installer again with the reason, so you can fix the settings from the browser. Until the installation is finished the
+installer is open to whoever can reach the port, like any installer: do it right after starting.
 
 There is no Microsoft login: Broom365 gets its own token with the client secret. It reads the permissions that token
 actually carries and tells you if any are missing (see *Permission preflight*).
@@ -64,40 +71,44 @@ sign-in, and an admin can reset a password the same way. There is always at leas
 synced data but keeps the accounts and the saved Entra connection. The first admin starts without a password, so open the
 page yourself right after the first start, before exposing the port to others.
 
-The Entra connection is stored in the database. The client secret is **encrypted** when the `BROOM_KEY` environment
-variable is set (any long random string; keep it and do not change it, or the secret has to be entered again); without it the
-secret is stored as plain text and Settings says so. `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` and `SECRET_KEY` in the
+The Entra connection is stored in the database. The client secret is **encrypted** with the key chosen in the installer (or the `BROOM_KEY` environment variable, which wins when set);
+keep that key, because without it the secret has to be entered again. `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` and `SECRET_KEY` in the
 environment or `.env` still work as a development fallback; what is saved in Settings wins.
 
-### Docker (one container, SQL Server optional)
+### Docker (one container)
 
 ```bash
 docker build -t broom365 .        # python:3.11-slim-bookworm + Microsoft ODBC Driver 18 (installed during the build)
-docker run -d -p 5000:5000   -e "DATABASE_URL=mssql+pyodbc://user:password@host:1433/broom365?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"   -e BROOM_KEY=<long random string>   broom365
+docker run -d -p 5000:5000 -v broom-data:/app/instance broom365
 ```
 
-Those two variables are all the container needs: the Entra connection and the accounts live in the database. The user needs full
-access to that database (Broom365 creates its tables on start). Open <http://host:5000>, sign in as `admin` with an empty password and
-set one straight away (see *Accounts*). The image contains Microsoft's ODBC driver, which Microsoft's licence does not clearly allow you to redistribute publicly: build it yourself and keep it in a private
+Open <http://host:5000>: the installer asks where the data goes (SQL Server or SQLite), for the key and the admin password, then the app asks for the Microsoft 365 connection.
+**Keep `/app/instance` on a volume**: it holds `bootstrap.json` (database settings and key) and the sessions, and the SQLite file when you choose it. Without a volume the installer comes back after
+every re-created container. The database user needs full access to its database (Broom365 creates its tables).
+
+Environment variables are optional now and win over what the installer saved: `DATABASE_URL` and `BROOM_KEY` (handy for automated deployments). `DATABASE_URL` accepts any ODBC option:
+`mssql+pyodbc://user:password@host:1433/database?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes&TrustServerCertificate=no`. A named instance is written `host%5Cinstance`; user and password are optional
+(`Trusted_Connection=yes`, `Authentication=...`); a complete ODBC string works too: `mssql+pyodbc:///?odbc_connect=DRIVER={ODBC+Driver+18+for+SQL+Server};SERVER=host,1433;DATABASE=db;UID=u;PWD=p`.
+Unless the URL sets `Encrypt` or `TrustServerCertificate` (or names a `DSN`) the connection is encrypted but the server's certificate is accepted as is, so a self-signed certificate works with no
+configuration; add `Encrypt=yes&TrustServerCertificate=no` to require a trusted certificate. The password may contain special characters (`# / ? @ :`) as typed; only a literal `%` should be written `%25`.
+
+The image contains Microsoft's ODBC driver, which Microsoft's licence does not clearly allow you to redistribute publicly: build it yourself and keep it in a private
 registry rather than publishing it. Start from your own base image with `--build-arg BASE_IMAGE=...` (Python 3.11+; the Dockerfile installs the Microsoft ODBC driver when the base lacks it, so building
 accepts Microsoft's licence terms for that driver).
 
-`docker-compose.prod.yml` is the minimal stack for production (for example in Portainer): only Broom365, with `BROOM_IMAGE`, `DATABASE_URL` and `BROOM_KEY` as variables.
-
-SQL Server is optional. Without `DATABASE_URL` Broom365 keeps a SQLite file (and the sessions) in `/app/instance`; mount a volume
-there so they survive a restart. `docker compose up --build` does exactly that (volume `broom-data`) and reads `DATABASE_URL`
-from `.env` when you have an external server (see `.env.example.docker`). For a throw-away SQL Server while developing, add
-`--profile mssql` and set `MSSQL_SA_PASSWORD` (and `MSSQL_IMAGE` to your own registry's copy if you do not use Docker Hub). The image runs one Gunicorn worker with threads, because a sync
+`docker-compose.prod.yml` is the minimal stack for production (for example in Portainer): only Broom365, one volume, and `BROOM_IMAGE` as the only required variable.
+`docker compose up --build` (`docker-compose.yml`) builds and runs it the same way; for a throw-away SQL Server while developing, add `--profile mssql` and set `MSSQL_SA_PASSWORD`
+(and `MSSQL_IMAGE` to your own registry's copy if you do not use Docker Hub). The image runs one Gunicorn worker with threads, because a sync
 job runs in-process, one at a time. The Python test suite also passes inside the image (Python 3.11).
 
 `FLASK_DEBUG=1` enables auto-reload when using `python run.py`; leave it off anywhere else.
 
 | Variable | Meaning |
 |---|---|
-| `BROOM_KEY` | Recommended: any long random string; encrypts the client secret stored in the database |
+| `BROOM_KEY` | Optional: the encryption key (the installer saves one otherwise); encrypts the client secret stored in the database |
 | `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` | Optional development fallback for the Entra connection (normally entered in Settings) |
 | `SECRET_KEY` | Optional; the session signing key. If unset, one is generated once and kept in the database |
-| `DATABASE_PATH` | SQLite file (default `instance/broom365.sqlite`) |
+| `DATABASE_PATH` | SQLite file (default `instance/broom365.sqlite`); `bootstrap.json` and the sessions live in the same folder |
 | `DATABASE_URL` | Production database, e.g. `mssql+pyodbc://user:password@host:1433/broom365?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes`. Overrides `DATABASE_PATH`. Any ODBC option can be added as `?Option=value&Option2=value2` (`driver`, `Encrypt`, `TrustServerCertificate`, `ApplicationIntent`, `MultiSubnetFailover`, `Authentication`, `Trusted_Connection`, `Connection Timeout`...); an option named like a generated part (`Server`, `Database`, `UID`, `PWD`) replaces it, a named instance is written `host%5Cinstance`, and user and password are optional. A complete ODBC string also works: `mssql+pyodbc:///?odbc_connect=DRIVER={ODBC+Driver+18+for+SQL+Server};SERVER=host,1433;DATABASE=db;UID=u;PWD=p`. Unless the URL sets `Encrypt` or `TrustServerCertificate` (or names a `DSN`), the connection is encrypted but the server's certificate is accepted as is, so a self-signed certificate
 works without any configuration; add `Encrypt=yes&TrustServerCertificate=no` to require a trusted certificate. The password may contain special characters (`# / ? @ :`) as typed; only a literal `%` should be written `%25`. Needs the Microsoft ODBC driver and `pyodbc`; tables are created on start. SQLite stays the default for development and tests |
 | `AUTH_MODE` | `app` (default, app-only) or `delegated` (interactive user sign-in) |

@@ -2,8 +2,8 @@
 #
 #   docker compose up --build        ->  http://localhost:5000   (sign in as admin with an empty password, then set one)
 #
-# Database: set DATABASE_URL (in .env) to use an external SQL Server. Without it Broom365 keeps a SQLite file in the
-# `broom-data` volume, together with the sessions.
+# Open the page and the installer asks where the data goes (SQL Server or SQLite), for the key and the admin password; its settings and
+# a SQLite file live in the `broom-data` volume. DATABASE_URL and BROOM_KEY (in .env) are optional and win over what the installer saved.
 #
 # For a throw-away SQL Server while developing, enable the optional `mssql` profile and point DATABASE_URL at it:
 #   MSSQL_SA_PASSWORD=...  DATABASE_URL="mssql+pyodbc://sa:...@mssql:1433/broom365?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"

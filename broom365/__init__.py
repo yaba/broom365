@@ -25,6 +25,9 @@ def create_app(config: Config | None = None) -> Flask:
     """
     demo = os.environ.get("BROOM_DEMO") == "1"
     cfg = config or (_demo_config() if demo else Config.from_env())
+    if config is None and not demo:
+        from . import bootstrap
+        bootstrap.use_saved_key()      # the key the installer saved (BROOM_KEY in the environment still wins)
     app = Flask(__name__, instance_relative_config=True)
     app.config.update(
         SECRET_KEY=cfg.secret_key or "pending",   # replaced below by SECRET_KEY from the environment or the database
@@ -49,6 +52,7 @@ def create_app(config: Config | None = None) -> Flask:
     from .accounts import bp as accounts_bp
     from .apps import bp as apps_bp
     from .auth import bp as auth_bp
+    from .connect import bp as connect_bp
     from .dashboard import bp as dashboard_bp
     from .export import bp as export_bp
     from .groups import bp as groups_bp
@@ -59,7 +63,7 @@ def create_app(config: Config | None = None) -> Flask:
 
     register_filters(app)
     register_csrf(app)
-    for bp in (auth_bp, accounts_bp, dashboard_bp, groups_bp, apps_bp, users_bp, settings_bp, export_bp):
+    for bp in (auth_bp, connect_bp, accounts_bp, dashboard_bp, groups_bp, apps_bp, users_bp, settings_bp, export_bp):
         app.register_blueprint(bp)
     return app
 

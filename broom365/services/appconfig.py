@@ -1,6 +1,6 @@
 """The Entra app connection and the session key, stored in the database (table app_config) and edited in Settings.
 
-The client secret is encrypted with `BROOM_KEY` (environment variable) when one is set; without it the secret is stored as plain text and
+The client secret is encrypted with the key from the installer (bootstrap.json) or `BROOM_KEY` (environment variable) when one is set; without it the secret is stored as plain text and
 the Settings page says so. Environment variables TENANT_ID, CLIENT_ID and CLIENT_SECRET still work as a fallback for development.
 """
 from __future__ import annotations
@@ -8,18 +8,21 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import re
 import secrets
 from dataclasses import dataclass
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from .. import bootstrap
+
 _ENC, _PLAIN = "enc:", "plain:"
 TENANT, CLIENT, SECRET = "azure_tenant_id", "azure_client_id", "azure_client_secret"
 
 
 def _fernet() -> Fernet | None:
-    key = os.environ.get("BROOM_KEY", "").strip()
+    key = bootstrap.encryption_key()
     if not key:
         return None
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(key.encode()).digest()))
@@ -87,6 +90,22 @@ def save_credentials(conn: Any, tenant_id: str, client_id: str, client_secret: s
     put(conn, CLIENT, client_id.strip())
     if client_secret:
         put(conn, SECRET, seal(client_secret.strip()))
+
+
+_GUID = re.compile(r"^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
+_DOMAIN = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+
+
+def validate_connection(tenant: str, client: str, secret: str, have_secret: bool) -> list[str]:
+    """What is wrong with the values typed for the Entra connection (empty list = fine). A blank secret is fine when one is stored."""
+    problems = []
+    if not (_GUID.match(tenant) or _DOMAIN.match(tenant)):
+        problems.append("Tenant ID must be a GUID or a domain such as contoso.onmicrosoft.com.")
+    if not _GUID.match(client):
+        problems.append("Client ID must be a GUID (Application (client) ID of the app registration).")
+    if not secret and not have_secret:
+        problems.append("Enter the client secret (its Value, not its ID).")
+    return problems
 
 
 def session_key(conn: Any) -> str:

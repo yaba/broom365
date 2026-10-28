@@ -213,6 +213,7 @@ class Config:
     def from_env(cls) -> "Config":
         """Load configuration from the process environment (after reading .env)."""
         load_dotenv()
+        from . import bootstrap   # the installer's file: used where the environment says nothing
         mode = os.environ.get("AUTH_MODE", "app").strip().lower()
         if mode not in ("app", "delegated"):
             raise ConfigError("AUTH_MODE must be 'app' or 'delegated'")
@@ -222,7 +223,7 @@ class Config:
             client_secret=os.environ.get("CLIENT_SECRET", "").strip(),
             secret_key=os.environ.get("SECRET_KEY", "").strip(),
             database_path=Path(os.environ.get("DATABASE_PATH", "instance/broom365.sqlite")),
-            database_url=os.environ.get("DATABASE_URL", "").strip(),
+            database_url=os.environ.get("DATABASE_URL", "").strip() or bootstrap.load().get("database_url", ""),
             redirect_uri=_require("REDIRECT_URI") if mode == "delegated" else os.environ.get("REDIRECT_URI", ""),
             auth_mode=mode,
         )
