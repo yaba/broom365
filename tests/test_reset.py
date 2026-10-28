@@ -45,16 +45,26 @@ def test_confirmed_reset_empties_everything_and_the_app_still_works(client):
     assert "Database deleted" in r.get_data(as_text=True)
     assert all(v == 0 for v in counts().values())
     html = client.get("/").get_data(as_text=True)
-    assert "No inventory yet" in html
-    # and it can be filled again from scratch
+    assert "Nothing counted yet" in html
+    # and it can be filled again from scratch: first the totals, then one tab on its own
+    import time
+
+    def wait():
+        for _ in range(100):
+            if not sync_runner.is_running():
+                break
+            time.sleep(0.1)
+
     tok = token(client)
     assert client.post("/sync/inventory", headers={"X-CSRF-Token": tok}).get_json()["started"] is True
-    import time
-    for _ in range(100):
-        if not sync_runner.is_running():
-            break
-        time.sleep(0.1)
-    assert counts()["groups"] > 0
+    wait()
+    assert counts()["groups"] == 0 and counts()["applications"] == 0           # counting reads no objects
+    c = sqlite3.connect("instance/demo.sqlite")
+    assert c.execute("SELECT total FROM inventory_totals WHERE kind = 'groups'").fetchone()[0] > 0
+    c.close()
+    assert client.post("/sync/analyse/apps", headers={"X-CSRF-Token": tok}).get_json()["started"] is True
+    wait()
+    assert counts()["applications"] > 0 and counts()["groups"] == 0            # the apps were read; the groups were not touched
 
 
 def test_saved_scope_patterns_and_settings_are_wiped_too(client):

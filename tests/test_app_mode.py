@@ -116,7 +116,7 @@ def sign_in_admin(client):
 
 def test_signed_in_admin_needs_no_microsoft_login_or_consent(monkeypatch, cfg):
     r = make_client(monkeypatch, cfg).get("/")
-    assert r.status_code == 200 and "No inventory yet" in r.get_data(as_text=True)
+    assert r.status_code == 200 and "Nothing counted yet" in r.get_data(as_text=True)
     assert "App-only" in r.get_data(as_text=True)
 
 

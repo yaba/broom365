@@ -154,8 +154,8 @@ def save() -> Response | tuple[str, int]:
                      errors), 400
     _save(values)
     conn = get_db()
-    if repo.last_run(conn, "inventory"):
-        n = recompute_flags(conn, repo.load_thresholds(conn), datetime.now(timezone.utc))
+    if analysed := repo.analysed_map(conn):
+        n = recompute_flags(conn, repo.load_thresholds(conn), datetime.now(timezone.utc), [repo.TAB_TYPES[tab] for tab in analysed])
         flash(f"Settings saved. Flags recomputed from stored data: {n} object(s) flagged.")
     else:
         flash("Settings saved.")
@@ -190,7 +190,7 @@ def reset() -> Response:
         flash(f"Nothing was deleted: type {RESET_WORD} to confirm.")
     else:
         reset_database(get_db())
-        flash("Database deleted. Run Refresh inventory to start again.")
+        flash("Database deleted. Count the objects, then analyse each tab, to start again.")
     return redirect(url_for("settings.show"))
 
 

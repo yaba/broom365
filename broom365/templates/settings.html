@@ -16,7 +16,7 @@
     <dt>Scanned</dt><dd>{{ counts.groups_scanned }} of {{ counts.groups_total }} groups &middot;
       {{ counts.apps_scanned }} of {{ counts.apps_total }} apps</dd>
   </dl>
-  <p style="margin:10px 0 0"><button type="button" id="inventory" class="btn">Re-sync inventory from Graph</button>
+  <p style="margin:10px 0 0"><button type="button" id="inventory" class="btn">Count the objects again</button>
     <span class="muted" id="sync-progress"></span></p>
   <p class="muted small">Checks of groups, apps, Intune apps and scripts are started separately from the dashboard, so you control how much is read.</p>
 </section>
@@ -141,7 +141,7 @@
 <section class="panel danger" id="reset">
   <h2>Delete database</h2>
   <p class="muted small">Deletes everything Broom365 stored locally: inventory, scans, flags, saved thresholds and scope patterns.
-    Nothing in your tenant is touched (Broom365 is read-only). You can rebuild it with <em>Refresh inventory</em>.</p>
+    Nothing in your tenant is touched (Broom365 is read-only). You can rebuild it by counting the objects and analysing each tab again.</p>
   <form method="post" action="{{ url_for('settings.reset') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label for="confirm" class="small">Type <strong>DELETE</strong> to confirm</label>

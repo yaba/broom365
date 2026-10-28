@@ -196,6 +196,7 @@ class AppFacts:
     owner_count: int | None = None
     sign_in_available: bool = False  # False => beta endpoint unavailable for this app
     last_sign_in_at: datetime | None = None  # None + available => no sign-in on record
+    checked: bool = True             # False = owners and application permissions were not read yet (only secrets, age and sign-in are known)
 
 
 # ------------------------------------------------------------------ users ---

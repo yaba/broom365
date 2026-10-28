@@ -40,6 +40,43 @@ def last_run(conn: sqlite3.Connection, kind: str | None = None, usable_only: boo
     return conn.execute(sql + " ORDER BY id DESC LIMIT 1", args).fetchone()  # type: ignore[no-any-return]
 
 
+# The tabs of the dashboard, and the kind of object each one flags.
+TAB_TYPES: dict[str, str] = {"groups": "group", "apps": "app", "users": "user", "intune": "intune_app", "scripts": "intune_script",
+                             "updates": "update", "guests": "guest", "members": "member", "dls": "dl", "mailboxes": "mailbox", "rules": "rule"}
+_TAB_TABLE = {"groups": "groups", "apps": "applications", "users": "users", "intune": "intune_apps", "scripts": "intune_scripts",
+              "updates": "update_policies", "guests": "guests", "members": "members", "dls": "distribution_lists", "mailboxes": "mailboxes",
+              "rules": "transport_rules"}
+# What the inventory counts: tab -> kind in inventory_totals. The other tabs are only known once they are analysed.
+COUNTED_TABS = ("groups", "apps", "guests", "members")
+
+
+def mark_analysed(conn: sqlite3.Connection, tabs: Iterable[str], when: str) -> None:
+    """Remember that these tabs were analysed at `when` (ISO time)."""
+    for tab in tabs:
+        conn.execute("INSERT INTO analyses (tab, analysed_at) VALUES (?, ?) ON CONFLICT(tab) DO UPDATE SET analysed_at = excluded.analysed_at", (tab, when))
+    conn.commit()
+
+
+def analysed_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """tab -> when it was last analysed (only the tabs that were)."""
+    return {r[0]: r[1] for r in conn.execute("SELECT tab, analysed_at FROM analyses")}
+
+
+def save_totals(conn: sqlite3.Connection, totals: dict[str, int], when: str) -> None:
+    for kind, total in totals.items():
+        conn.execute("INSERT INTO inventory_totals (kind, total, counted_at) VALUES (?,?,?) "
+                     "ON CONFLICT(kind) DO UPDATE SET total = excluded.total, counted_at = excluded.counted_at", (kind, total, when))
+    conn.commit()
+
+
+def tab_total(conn: sqlite3.Connection, tab: str, analysed: bool) -> int | None:
+    """How many objects a tab has: counted from its data once analysed, otherwise what the inventory counted (None = not known yet)."""
+    if analysed:
+        return int(conn.execute(f"SELECT COUNT(*) FROM {_TAB_TABLE[tab]}").fetchone()[0])
+    row = conn.execute("SELECT total FROM inventory_totals WHERE kind = ?", (tab,)).fetchone()
+    return None if row is None else int(row[0])
+
+
 def signal_map(conn: sqlite3.Connection) -> dict[str, bool]:
     """signal name -> currently available."""
     return {r[0]: bool(r[1]) for r in conn.execute("SELECT signal, available FROM signal_availability")}
@@ -175,8 +212,12 @@ def load_group_facts(conn: sqlite3.Connection, only_id: str | None = None) -> li
                             (only_id,) if only_id else ())]
 
 
-def load_app_facts(conn: sqlite3.Connection, only_id: str | None = None) -> list[AppFacts]:
-    """AppFacts for every *scanned* app registration (or just `only_id`): credentials, permissions (via its SP), sign-in."""
+def load_app_facts(conn: sqlite3.Connection, only_id: str | None = None, include_unchecked: bool = False) -> list[AppFacts]:
+    """AppFacts for every *scanned* app registration (or just `only_id`): credentials, permissions (via its SP), sign-in.
+
+    With `include_unchecked` the apps whose owners and application permissions were not read yet come too, marked `checked=False`:
+    what is known about them (secrets, age, sign-in) can still be evaluated, the permissions are not guessed.
+    """
     sign_in_ok = signal_map(conn).get("sp_sign_in_activity", False)
     creds: dict[str, list[Credential]] = {}
     for r in conn.execute("SELECT * FROM app_credentials"):
@@ -189,14 +230,17 @@ def load_app_facts(conn: sqlite3.Connection, only_id: str | None = None) -> list
     activity = {r["object_id"]: parse_graph_dt(r["last_sign_in_at"]) for r in conn.execute(
         "SELECT object_id, last_sign_in_at FROM sign_in_activity WHERE object_type = 'servicePrincipal'")}
     apps: list[AppFacts] = []
-    for r in conn.execute("SELECT * FROM applications WHERE scanned_at IS NOT NULL" + (" AND id = ?" if only_id else ""),
-                          (only_id,) if only_id else ()):
+    where = [] if include_unchecked else ["scanned_at IS NOT NULL"]
+    if only_id:
+        where.append("id = ?")
+    for r in conn.execute("SELECT * FROM applications" + (" WHERE " + " AND ".join(where) if where else ""), (only_id,) if only_id else ()):
         sp_id = sp_by_app.get(r["app_id"])
+        checked = r["scanned_at"] is not None
         apps.append(AppFacts(
             id=r["id"], app_id=r["app_id"], display_name=r["display_name"] or r["app_id"],
-            credentials=tuple(creds.get(r["id"], ())), permissions=tuple(perms.get(sp_id, ())) if sp_id else (),
-            owner_count=r["owner_count"], sign_in_available=sign_in_ok and sp_id in activity,
-            last_sign_in_at=activity.get(sp_id) if sp_id else None))
+            credentials=tuple(creds.get(r["id"], ())), permissions=tuple(perms.get(sp_id, ())) if sp_id and checked else (),
+            owner_count=r["owner_count"] if checked else None, sign_in_available=sign_in_ok and sp_id in activity,
+            last_sign_in_at=activity.get(sp_id) if sp_id else None, checked=checked))
     return apps
 
 
@@ -358,7 +402,7 @@ def load_rule_facts(conn: sqlite3.Connection, now: datetime | None = None) -> li
     row = conn.execute("SELECT value FROM settings WHERE name = 'accepted_domains'").fetchone()
     domains = set(json.loads(row[0])) if row else set()
     checked = bool(domains and sig.get("exchange_distribution_lists") and sig.get("exchange_mailboxes")
-                   and conn.execute("SELECT COUNT(*) FROM members").fetchone()[0])
+                   and conn.execute("SELECT COUNT(*) FROM members").fetchone()[0] and conn.execute("SELECT COUNT(*) FROM groups").fetchone()[0])
     known: set[str] = set()
     if checked:
         known.update(a.lower() for (a,) in conn.execute("SELECT address FROM distribution_lists WHERE address IS NOT NULL"))
@@ -377,22 +421,22 @@ def load_rule_facts(conn: sqlite3.Connection, now: datetime | None = None) -> li
 
 
 # ------------------------------------------------------------------ flags ---
-def save_assessments(conn: sqlite3.Connection, assessments: Iterable[Assessment]) -> int:
-    """Replace the flag cache. Only objects with at least one flag are stored. Returns count."""
-    conn.execute("DELETE FROM flagged_objects")  # cascades to flags
-    n = 0
-    for a in assessments:
-        if not a.flags:
-            continue
-        n += 1
-        conn.execute("INSERT INTO flagged_objects (object_type, object_id, display_name, risk_level) VALUES (?,?,?,?)",
-                     (a.object_type, a.object_id, a.display_name, a.risk.value))
-        conn.executemany(
-            "INSERT INTO flags (object_type, object_id, flag, explanation, evidence) VALUES (?,?,?,?,?)",
-            [(a.object_type, a.object_id, f.code.value, f.explanation, json.dumps(dict(f.evidence), default=str))
-             for f in a.flags])
+def save_assessments(conn: sqlite3.Connection, assessments: Iterable[Assessment], types: Iterable[str] | None = None) -> int:
+    """Replace the flag cache (or only the given object types). Only objects with at least one flag are stored. Returns count."""
+    if types is None:
+        conn.execute("DELETE FROM flagged_objects")  # cascades to flags
+    else:
+        wanted = list(types)
+        conn.execute(f"DELETE FROM flagged_objects WHERE object_type IN ({','.join('?' * len(wanted))})", wanted)
+    flagged = [a for a in assessments if a.flags]
+    # Two batches, not two statements per object: on SQL Server every statement is a round trip to the server.
+    conn.executemany("INSERT INTO flagged_objects (object_type, object_id, display_name, risk_level) VALUES (?,?,?,?)",
+                     [(a.object_type, a.object_id, a.display_name, a.risk.value) for a in flagged])
+    conn.executemany(
+        "INSERT INTO flags (object_type, object_id, flag, explanation, evidence) VALUES (?,?,?,?,?)",
+        [(a.object_type, a.object_id, f.code.value, f.explanation, json.dumps(dict(f.evidence), default=str)) for a in flagged for f in a.flags])
     conn.commit()
-    return n
+    return len(flagged)
 
 
 def usage_coverage(conn: sqlite3.Connection, group_id: str) -> list[dict[str, Any]]:

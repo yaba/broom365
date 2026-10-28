@@ -29,6 +29,7 @@
 {% for m in get_flashed_messages() %}<div class="flash" role="status">{{ m }}</div>{% endfor %}
 {% block content %}{% endblock %}</main>
 <footer class="foot">Broom365 is read-only. Findings are candidates for review, never verdicts.</footer>
+<script src="{{ url_for('static', filename='jobbar.js') }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -1,4 +1,9 @@
-"""Graph -> SQLite, in two phases, then correlation.
+"""Graph -> the database, then correlation.
+
+The application works on demand, one tab at a time:
+COUNTS (`run_counts`): the totals only (groups, apps, guests, internal users), a few cheap calls. Nothing is evaluated.
+ANALYSIS (`run_analysis`): reads what ONE tab needs and evaluates only that kind of object, so apps can be analysed without touching groups.
+The two phases below are the original, all-at-once way, still used to fill the demo and by the tests.
 
 INVENTORY (`run_inventory`): cheap, bulk calls. Stores names/metadata for every group,
     app registration and service principal, plus tenant-wide delegated grants, role
@@ -22,6 +27,8 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, TypeVar
 
+from dataclasses import dataclass
+
 from ..models.types import Assessment, Thresholds
 from . import repository as repo
 from .correlate import evaluate_group
@@ -32,7 +39,7 @@ from .exchange_mail import evaluate_mailbox, evaluate_rule, extract_addresses, f
 from .guests import evaluate_guest
 from .intune import evaluate_intune_app, evaluate_intune_script
 from .members import evaluate_member
-from .graph import GraphClient, GraphError, Json, SignalUnavailable
+from .graph import V1, GraphClient, GraphError, Json, SignalUnavailable
 from .permissions import check_permissions
 from ._time import parse_graph_dt
 from .updates import evaluate_update_policy
@@ -150,21 +157,31 @@ def _execute(conn: sqlite3.Connection, kind: str, granted_scopes: Iterable[str],
     return int(run_id)
 
 
-def recompute_flags(conn: sqlite3.Connection, t: Thresholds, now: datetime) -> int:
-    """Re-run correlation over stored data (also used when thresholds change, without Graph calls)."""
+_EVALUATE: dict[str, Callable[[sqlite3.Connection, Thresholds, datetime], list[Assessment]]] = {
+    "group": lambda c, t, now: [evaluate_group(g, t, now) for g in repo.load_group_facts(c)],
+    "app": lambda c, t, now: [evaluate_app(a, t, now) for a in repo.load_app_facts(c, include_unchecked=True)],
+    "user": lambda c, t, now: [evaluate_user(u, t, now) for u in repo.load_user_facts(c)],
+    "intune_app": lambda c, t, now: [evaluate_intune_app(a, now) for a in repo.load_intune_app_facts(c)],
+    "intune_script": lambda c, t, now: [evaluate_intune_script(s, t, now) for s in repo.load_intune_script_facts(c)],
+    "update": lambda c, t, now: [evaluate_update_policy(p, t, now) for p in repo.load_update_policy_facts(c)],
+    "guest": lambda c, t, now: [evaluate_guest(g, t, now) for g in repo.load_guest_facts(c)],
+    "member": lambda c, t, now: [evaluate_member(m, t, now) for m in repo.load_member_facts(c)],
+    "dl": lambda c, t, now: [evaluate_distribution_list(d, now) for d in repo.load_dl_facts(c)],
+    "mailbox": lambda c, t, now: [evaluate_mailbox(m, t, now) for m in repo.load_mailbox_facts(c)],
+    "rule": lambda c, t, now: [evaluate_rule(r, now) for r in repo.load_rule_facts(c, now)],
+}
+
+
+def recompute_flags(conn: sqlite3.Connection, t: Thresholds, now: datetime, types: Iterable[str] | None = None) -> int:
+    """Re-run correlation over stored data (also used when thresholds change, without Graph calls).
+
+    `types` limits it to some kinds of object (their flags are replaced, the others are left alone); None = all of them.
+    """
+    wanted = list(_EVALUATE) if types is None else [ty for ty in _EVALUATE if ty in set(types)]
     assessments: list[Assessment] = []
-    assessments += [evaluate_group(g, t, now) for g in repo.load_group_facts(conn)]
-    assessments += [evaluate_app(a, t, now) for a in repo.load_app_facts(conn)]
-    assessments += [evaluate_user(u, t, now) for u in repo.load_user_facts(conn)]
-    assessments += [evaluate_intune_app(a, now) for a in repo.load_intune_app_facts(conn)]
-    assessments += [evaluate_intune_script(s, t, now) for s in repo.load_intune_script_facts(conn)]
-    assessments += [evaluate_update_policy(p, t, now) for p in repo.load_update_policy_facts(conn)]
-    assessments += [evaluate_guest(g, t, now) for g in repo.load_guest_facts(conn)]
-    assessments += [evaluate_member(m, t, now) for m in repo.load_member_facts(conn)]
-    assessments += [evaluate_distribution_list(d, now) for d in repo.load_dl_facts(conn)]
-    assessments += [evaluate_mailbox(m, t, now) for m in repo.load_mailbox_facts(conn)]
-    assessments += [evaluate_rule(r, now) for r in repo.load_rule_facts(conn, now)]
-    return repo.save_assessments(conn, assessments)
+    for ty in wanted:
+        assessments += _EVALUATE[ty](conn, t, now)
+    return repo.save_assessments(conn, assessments, None if types is None else wanted)
 
 
 # --------------------------------------------------------------- inventory --
@@ -203,9 +220,171 @@ def run_inventory(conn: sqlite3.Connection, graph: GraphClient, granted_scopes: 
         say("Computing flags")
         signals.persist(conn, now)  # flags read signal availability, so this run's state must be stored first
         flagged = recompute_flags(conn, thresholds or repo.load_thresholds(conn), now)
+        repo.mark_analysed(conn, [tab for tab in repo.TAB_TYPES if tab != "mailboxes"], stamp)
         return {"groups": n_groups, "applications": len(app_sp_ids), "group_references": n_usages, "guests": n_guests, "members": n_members, "distribution_lists": n_lists, "flagged": flagged}
 
     return _execute(conn, "inventory", granted_scopes, now, progress, body)
+
+
+# ------------------------------------------------------------------ counts --
+_COUNTED: tuple[tuple[str, str, str | None], ...] = (
+    ("groups", "/groups", None),
+    ("apps", "/applications", None),
+    ("guests", "/users", "userType eq 'Guest'"),
+    ("members", "/users", "userType eq 'Member'"),
+)
+
+
+def run_counts(conn: sqlite3.Connection, graph: GraphClient, granted_scopes: Iterable[str], now: datetime | None = None,
+               progress: Progress | None = None) -> int:
+    """The inventory: only the totals (a few cheap calls). Nothing is read in detail and nothing is evaluated.
+
+    A total that cannot be counted (a missing permission) is reported as an unavailable signal and the others are still stored.
+    """
+    now = now or datetime.now(timezone.utc)
+
+    def body(say: Progress, signals: Signals) -> dict[str, Any]:
+        totals: dict[str, int] = {}
+        for kind, path, flt in _COUNTED:
+            say(f"Counting {kind}")
+            found = signals.guard(f"count_{kind}", lambda: graph.count(f"{V1}{path}", flt), None)
+            if found is not None:
+                totals[kind] = found
+        repo.save_totals(conn, totals, _iso(now))
+        return {"totals": totals}
+
+    return _execute(conn, "inventory", granted_scopes, now, progress, body)
+
+
+# ----------------------------------------------------------------- analysis --
+@dataclass(frozen=True)
+class _Plan:
+    """What the analysis of a tab reads (in this order) and which other tabs it analyses by the way."""
+
+    steps: tuple[str, ...]
+    sources: frozenset[str] | None = None      # the "usages" step: which sources (None = all, Conditional Access included)
+    store: bool = True                         # the "usages" step: also keep the Intune objects themselves
+    also: tuple[str, ...] = ()
+    needs_exchange: bool = False
+
+
+_PLANS: dict[str, _Plan] = {
+    "apps": _Plan(("service_principals", "applications", "deleted_delegated", "sp_sign_ins")),
+    "users": _Plan(("roles",)),
+    "groups": _Plan(("service_principals", "deleted_delegated", "roles", "usages", "groups"), None, False, ("users",)),
+    "intune": _Plan(("usages",), frozenset({"intune_apps"})),
+    "scripts": _Plan(("usages",), frozenset(SCRIPT_KINDS)),
+    "updates": _Plan(("usages",), frozenset(UPDATE_KINDS) | {"intune_device_config"}),
+    "guests": _Plan(("guests",)),
+    "members": _Plan(("members",)),
+    "dls": _Plan(("exchange",), also=("rules",), needs_exchange=True),
+    "rules": _Plan(("exchange",), also=("dls",), needs_exchange=True),
+    "mailboxes": _Plan(("mailbox_types",), needs_exchange=True),
+}
+assert set(_PLANS) == set(repo.TAB_TYPES)
+
+
+class _Loader:
+    """The reading steps of an analysis. Steps that need the service principals use the ones read in this run, else the stored ones."""
+
+    def __init__(self, conn: sqlite3.Connection, graph: GraphClient, exchange: ExchangeClient | None, signals: Signals, stamp: str, say: Progress) -> None:
+        self.conn, self.graph, self.exchange, self.signals, self.stamp, self.say = conn, graph, exchange, signals, stamp, say
+        self._sps: dict[str, Json] | None = None
+        self._app_sp_ids: set[str] | None = None
+        self.read = 0
+
+    def _known_sps(self) -> dict[str, Json]:
+        if self._sps is None:
+            self._sps = {r["id"]: {"id": r["id"], "appId": r["app_id"], "displayName": r["display_name"]}
+                         for r in self.conn.execute("SELECT id, app_id, display_name FROM service_principals")}
+        return self._sps
+
+    def _known_app_sp_ids(self) -> set[str]:
+        if self._app_sp_ids is None:
+            self._app_sp_ids = {r["id"] for r in self.conn.execute(
+                "SELECT s.id FROM service_principals s JOIN applications a ON a.app_id = s.app_id")}
+        return self._app_sp_ids
+
+    def service_principals(self, plan: _Plan) -> None:
+        self.say("Reading service principals")
+        self._sps = {sp["id"]: sp for sp in self.graph.list_service_principals()}
+        _upsert_service_principals(self.conn, self._sps, self.stamp)
+
+    def applications(self, plan: _Plan) -> None:
+        self.say("Reading applications")
+        self._app_sp_ids = _upsert_applications(self.conn, self.graph, self._known_sps(), self.stamp)
+        self.read = len(self._app_sp_ids)
+
+    def deleted_delegated(self, plan: _Plan) -> None:
+        self.say("Reading deleted items and delegated permissions")
+        _reload_deleted_and_delegated(self.conn, self.graph, self.signals, self._known_sps(), self._known_app_sp_ids())
+
+    def sp_sign_ins(self, plan: _Plan) -> None:
+        self.say("Reading sign-in activity")
+        _reload_sp_sign_ins(self.conn, self.graph, self.signals, self._known_sps(), self._known_app_sp_ids())
+
+    def roles(self, plan: _Plan) -> None:
+        self.say("Reading directory roles and privileged users")
+        _reload_roles_and_users(self.conn, self.graph, self.signals)
+
+    def guests(self, plan: _Plan) -> None:
+        self.say("Reading external (guest) users")
+        self.read = _reload_guests(self.conn, self.graph, self.signals, self.stamp)
+
+    def members(self, plan: _Plan) -> None:
+        self.say("Reading internal users and licences")
+        self.read = _reload_members(self.conn, self.graph, self.signals, self.stamp)
+
+    def exchange_(self, plan: _Plan) -> None:
+        self.say("Reading Exchange distribution lists and transport rules")
+        self.read = _reload_exchange(self.conn, self.exchange, self.signals, self.stamp)
+
+    def mailbox_types(self, plan: _Plan) -> None:
+        assert self.exchange is not None
+        _read_mailbox_types(self.conn, self.exchange, self.signals, self.stamp, self.say)
+
+    def usages(self, plan: _Plan) -> None:
+        self.say("Reading Conditional Access and Intune assignments" if plan.sources is None else "Reading Intune assignments")
+        self.read = _reload_usages(self.conn, self.graph, self.signals, self.stamp, plan.sources, plan.store)
+
+    def groups(self, plan: _Plan) -> None:
+        self.read = _upsert_groups(self.conn, self.graph, self.stamp, self.say)
+
+
+def run_analysis(conn: sqlite3.Connection, graph: GraphClient, granted_scopes: Iterable[str], tab: str, thresholds: Thresholds | None = None,
+                 now: datetime | None = None, progress: Progress | None = None, exchange: ExchangeClient | None = None,
+                 group_patterns: str = "") -> int:
+    """Read and evaluate ONE tab: only what it needs is read, only that kind of object is evaluated, the other tabs are left alone.
+
+    groups -> the groups, who uses them (Conditional Access, Intune) and the privileged roles, then the owners, members and audit
+    activity of the groups the patterns select (privileged groups always); apps -> app registrations with secrets and age, and their
+    sign-in activity (owners and permissions are read per app, by the detail check); the others read their own list.
+    """
+    if tab not in _PLANS:
+        raise ValueError(f"unknown tab {tab!r}")
+    plan = _PLANS[tab]
+    now = now or datetime.now(timezone.utc)
+    t = thresholds or repo.load_thresholds(conn)
+
+    def body(say: Progress, signals: Signals) -> dict[str, Any]:
+        if plan.needs_exchange and exchange is None:    # raised here so the run is recorded as failed, with this message
+            raise ValueError("Exchange Online can only be read in app-only mode (it needs the Exchange.ManageAsApp permission).")
+        stamp = _iso(now)
+        loader = _Loader(conn, graph, exchange, signals, stamp, say)
+        for step in plan.steps:
+            getattr(loader, "exchange_" if step == "exchange" else step)(plan)
+        group_ids: list[str] = []
+        if tab == "groups":
+            group_ids = repo.select_scope_ids(conn, "groups", group_patterns)
+            _scan_groups(conn, graph, signals, group_ids, t, stamp, say)
+        say("Computing flags")
+        signals.persist(conn, now)  # flags read signal availability, so this run's state must be stored first
+        tabs = [tab, *plan.also]
+        flagged = recompute_flags(conn, t, now, [repo.TAB_TYPES[x] for x in tabs])
+        repo.mark_analysed(conn, tabs, stamp)
+        return {"analysed": tab, "read": loader.read, "groups_scanned": len(group_ids), "flagged": flagged}
+
+    return _execute(conn, "scan", granted_scopes, now, progress, body)
 
 
 def _upsert_service_principals(conn: sqlite3.Connection, sps: dict[str, Json], stamp: str) -> None:
@@ -223,22 +402,19 @@ def _upsert_service_principals(conn: sqlite3.Connection, sps: dict[str, Json], s
 def _upsert_applications(conn: sqlite3.Connection, graph: GraphClient, sps: dict[str, Json], stamp: str) -> set[str]:
     """Upsert app registrations + credentials (they arrive with the list). Returns tenant-app SP ids."""
     sp_by_app = {sp["appId"]: sp["id"] for sp in sps.values()}
-    app_sp_ids: set[str] = set()
-    for app in graph.list_applications():
-        conn.execute(
-            "INSERT INTO applications (id, app_id, display_name, created_at, inventoried_at) VALUES (?,?,?,?,?) "
-            "ON CONFLICT(id) DO UPDATE SET app_id = excluded.app_id, display_name = excluded.display_name, "
-            "created_at = excluded.created_at, inventoried_at = excluded.inventoried_at",
-            (app["id"], app["appId"], app.get("displayName"), app.get("createdDateTime"), stamp))
-        conn.execute("DELETE FROM app_credentials WHERE application_id = ?", (app["id"],))
-        conn.executemany(
-            "INSERT OR IGNORE INTO app_credentials (application_id, key_id, kind, display_name, start_at, end_at) "
-            "VALUES (?,?,?,?,?,?)",
-            [(app["id"], c["keyId"], kind, c.get("displayName"), c.get("startDateTime"), c.get("endDateTime"))
-             for kind, field in (("password", "passwordCredentials"), ("key", "keyCredentials"))
-             for c in app.get(field) or []])
-        if app["appId"] in sp_by_app:
-            app_sp_ids.add(sp_by_app[app["appId"]])
+    apps = list(graph.list_applications())
+    conn.executemany(
+        "INSERT INTO applications (id, app_id, display_name, created_at, inventoried_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(id) DO UPDATE SET app_id = excluded.app_id, display_name = excluded.display_name, "
+        "created_at = excluded.created_at, inventoried_at = excluded.inventoried_at",
+        [(app["id"], app["appId"], app.get("displayName"), app.get("createdDateTime"), stamp) for app in apps])
+    conn.execute("DELETE FROM app_credentials")      # every app's credentials are rewritten just below
+    conn.executemany(
+        "INSERT OR IGNORE INTO app_credentials (application_id, key_id, kind, display_name, start_at, end_at) "
+        "VALUES (?,?,?,?,?,?)",
+        [(app["id"], c["keyId"], kind, c.get("displayName"), c.get("startDateTime"), c.get("endDateTime"))
+         for app in apps for kind, field in (("password", "passwordCredentials"), ("key", "keyCredentials")) for c in app.get(field) or []])
+    app_sp_ids = {sp_by_app[app["appId"]] for app in apps if app["appId"] in sp_by_app}
     conn.execute("DELETE FROM applications WHERE inventoried_at <> ?", (stamp,))
     conn.commit()
     return app_sp_ids
@@ -268,7 +444,7 @@ def _reload_roles_and_users(conn: sqlite3.Connection, graph: GraphClient, signal
     """Role assignments, plus user rows and sign-in activity for users that hold a role (batched, 15 users per call)."""
     conn.execute("DELETE FROM role_assignments")
     conn.execute("DELETE FROM users")
-    conn.execute("DELETE FROM sign_in_activity")
+    conn.execute("DELETE FROM sign_in_activity WHERE object_type = 'user'")
     items, role_names = signals.guard(
         "role_assignments",
         lambda: (list(graph.list_role_assignments()), {d["id"]: d.get("displayName") for d in graph.list_role_definitions()}),
@@ -303,13 +479,15 @@ def _reload_roles_and_users(conn: sqlite3.Connection, graph: GraphClient, signal
 def _reload_sp_sign_ins(conn: sqlite3.Connection, graph: GraphClient, signals: Signals,
                         sps: dict[str, Json], app_sp_ids: set[str]) -> None:
     """Bulk SP activity report; app SPs absent from it get a row with no date ('no sign-in on record')."""
+    conn.execute("DELETE FROM sign_in_activity WHERE object_type = 'servicePrincipal'")
     report = signals.guard("sp_sign_in_activity", lambda: list(graph.list_sp_sign_in_activities()), [])
     if not signals.ok("sp_sign_in_activity"):
+        conn.commit()
         return
     by_app = {r.get("appId"): r for r in report}
-    for sp_id in app_sp_ids:
-        entry = by_app.get(sps[sp_id]["appId"], {})
-        _insert_activity(conn, sp_id, "servicePrincipal", entry.get("lastSignInActivity") or {})
+    conn.executemany("INSERT OR REPLACE INTO sign_in_activity (object_id, object_type, last_sign_in_at, last_interactive_at, last_non_interactive_at) "
+                     "VALUES (?,?,?,?,?)",
+                     [_activity_row(sp_id, "servicePrincipal", by_app.get(sps[sp_id]["appId"], {}).get("lastSignInActivity") or {}) for sp_id in app_sp_ids])
     conn.commit()
 
 
@@ -462,39 +640,49 @@ def _reload_members(conn: sqlite3.Connection, graph: GraphClient, signals: Signa
     return len(users)
 
 
-def _insert_activity(conn: sqlite3.Connection, object_id: str, kind: str, a: Json) -> None:
+def _activity_row(object_id: str, kind: str, a: Json) -> tuple[str, str, str | None, str | None, str | None]:
     interactive, non_interactive = a.get("lastSignInDateTime"), a.get("lastNonInteractiveSignInDateTime")
     latest = max((d for d in (interactive, non_interactive, a.get("lastSuccessfulSignInDateTime")) if d), default=None)
+    return (object_id, kind, latest, interactive, non_interactive)
+
+
+def _insert_activity(conn: sqlite3.Connection, object_id: str, kind: str, a: Json) -> None:
     conn.execute("INSERT OR REPLACE INTO sign_in_activity (object_id, object_type, last_sign_in_at, "
-                 "last_interactive_at, last_non_interactive_at) VALUES (?,?,?,?,?)",
-                 (object_id, kind, latest, interactive, non_interactive))
+                 "last_interactive_at, last_non_interactive_at) VALUES (?,?,?,?,?)", _activity_row(object_id, kind, a))
 
 
-def _reload_usages(conn: sqlite3.Connection, graph: GraphClient, signals: Signals, stamp: str) -> int:
+def _reload_usages(conn: sqlite3.Connection, graph: GraphClient, signals: Signals, stamp: str,
+                   only: Iterable[str] | None = None, store: bool = True) -> int:
     """Collect every place that references a group (Conditional Access, Intune assignments) in bulk.
 
     Each source is its own signal: one that cannot be read is recorded as unavailable and contributes no rows,
-    so its absence is reported as "not checked" rather than "not used".
+    so its absence is reported as "not checked" rather than "not used". `only` limits the sources read (None = all of them,
+    Conditional Access included); `store=False` keeps the Intune apps, scripts and update policies themselves untouched
+    and records only who they are assigned to.
     """
+    wanted = None if only is None else set(only)
     rows: list[tuple[str, str, str, str, str, str, str | None]] = []
-    policies = signals.guard("policy_binding", lambda: list(graph.list_conditional_access_policies()), [])
+    policies = signals.guard("policy_binding", lambda: list(graph.list_conditional_access_policies()), []) \
+        if wanted is None or "policy_binding" in wanted else []
     for p in policies:
         users = (p.get("conditions") or {}).get("users") or {}
         for mode, key in (("include", "includeGroups"), ("exclude", "excludeGroups")):
             for gid in users.get(key) or []:
                 rows.append((gid, "policy_binding", "Conditional Access policy", p["id"],
                              p.get("displayName") or p["id"], mode, p.get("state")))
+    read: set[str] = {"policy_binding"} if wanted is None or "policy_binding" in wanted else set()
     for src in USAGE_SOURCES:
-        if not src.path:
+        if not src.path or (wanted is not None and src.signal not in wanted):
             continue
+        read.add(src.signal)
         items = signals.guard(src.signal, lambda: list(graph.list_with_assignments(src.api, src.path)), [])
-        if src.signal == "intune_apps" and signals.ok(src.signal):
+        if store and src.signal == "intune_apps" and signals.ok(src.signal):
             _store_intune_apps(conn, items, stamp)
-        if src.signal in SCRIPT_KINDS and signals.ok(src.signal):
+        if store and src.signal in SCRIPT_KINDS and signals.ok(src.signal):
             _store_intune_scripts(conn, SCRIPT_KINDS[src.signal], items, stamp)
-        if src.signal in UPDATE_KINDS and signals.ok(src.signal):
+        if store and src.signal in UPDATE_KINDS and signals.ok(src.signal):
             _store_update_policies(conn, UPDATE_KINDS[src.signal], items, stamp)
-        if src.signal == "intune_device_config" and signals.ok(src.signal):
+        if store and src.signal == "intune_device_config" and signals.ok(src.signal):
             _store_update_policies(conn, "ring", [i for i in items if str(i.get("@odata.type", "")).endswith(UPDATE_RING_TYPE)], stamp)
         for item in items:
             name = item.get("displayName") or item.get("name") or item["id"]
@@ -505,7 +693,10 @@ def _reload_usages(conn: sqlite3.Connection, graph: GraphClient, signals: Signal
                     continue
                 rows.append((target["groupId"], src.signal, src.kind, item["id"], name,
                              "exclude" if "exclusion" in kind else "assigned", a.get("intent")))
-    conn.execute("DELETE FROM group_usages")
+    if wanted is None:
+        conn.execute("DELETE FROM group_usages")
+    elif read:
+        conn.execute(f"DELETE FROM group_usages WHERE source IN ({','.join('?' * len(read))})", sorted(read))
     conn.executemany("INSERT OR IGNORE INTO group_usages (group_id, source, kind, object_id, object_name, mode, detail) "
                      "VALUES (?,?,?,?,?,?,?)", rows)
     conn.commit()
@@ -522,41 +713,45 @@ _INTUNE_TARGETS = {  # Graph target type -> (target, mode)
 
 def _store_intune_apps(conn: sqlite3.Connection, items: list[Json], stamp: str) -> None:
     """Upsert Intune apps and replace their assignment targets. Relationships and `scanned_at` survive a re-inventory."""
-    for item in items:
-        conn.execute(
-            "INSERT INTO intune_apps (id, display_name, app_type, publisher, created_at, modified_at, inventoried_at) "
-            "VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, "
-            "app_type = excluded.app_type, publisher = excluded.publisher, created_at = excluded.created_at, "
-            "modified_at = excluded.modified_at, inventoried_at = excluded.inventoried_at",
-            (item["id"], item.get("displayName"), str(item.get("@odata.type", "")).rsplit(".", 1)[-1] or None,
-             item.get("publisher"), item.get("createdDateTime"), item.get("lastModifiedDateTime"), stamp))
-        conn.execute("DELETE FROM intune_app_assignments WHERE app_id = ?", (item["id"],))
-        for a in item.get("assignments") or []:
-            target = a.get("target") or {}
-            kind = _INTUNE_TARGETS.get(str(target.get("@odata.type", "")).rsplit(".", 1)[-1].lower())
-            if kind is None or (kind[0] == "group" and not target.get("groupId")):
-                continue
-            conn.execute("INSERT OR IGNORE INTO intune_app_assignments (app_id, target, group_id, mode, intent) VALUES (?,?,?,?,?)",
-                         (item["id"], kind[0], target.get("groupId") or "", kind[1], a.get("intent") or ""))
+    conn.execute("DELETE FROM intune_app_assignments")    # every app's assignments are rewritten just below; the ones that left take theirs along
+    conn.executemany(
+        "INSERT INTO intune_apps (id, display_name, app_type, publisher, created_at, modified_at, inventoried_at) "
+        "VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, "
+        "app_type = excluded.app_type, publisher = excluded.publisher, created_at = excluded.created_at, "
+        "modified_at = excluded.modified_at, inventoried_at = excluded.inventoried_at",
+        [(item["id"], item.get("displayName"), str(item.get("@odata.type", "")).rsplit(".", 1)[-1] or None,
+          item.get("publisher"), item.get("createdDateTime"), item.get("lastModifiedDateTime"), stamp) for item in items])
+    conn.executemany("INSERT OR IGNORE INTO intune_app_assignments (app_id, target, group_id, mode, intent) VALUES (?,?,?,?,?)",
+                     [(item["id"], kind[0], (a.get("target") or {}).get("groupId") or "", kind[1], a.get("intent") or "")
+                      for item in items for a in item.get("assignments") or []
+                      if (kind := _INTUNE_TARGETS.get(str((a.get("target") or {}).get("@odata.type", "")).rsplit(".", 1)[-1].lower())) is not None
+                      and not (kind[0] == "group" and not (a.get("target") or {}).get("groupId"))])
     conn.execute("DELETE FROM intune_apps WHERE inventoried_at <> ?", (stamp,))  # gone from the tenant; cascades
 
 
-def _store_intune_scripts(conn: sqlite3.Connection, kind: str, items: list[Json], stamp: str) -> None:
-    """Upsert the scripts of one kind and replace their assignment targets. Run results and `scanned_at` survive."""
+def _assignment_rows(items: list[Json]) -> list[tuple[str, str, str, str]]:
+    """(owner id, target, group id, mode) for every assignment of the Intune objects that reaches a group, everybody or all devices."""
+    rows = []
     for item in items:
-        conn.execute(
-            "INSERT INTO intune_scripts (id, kind, display_name, created_at, modified_at, inventoried_at) VALUES (?,?,?,?,?,?) "
-            "ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, display_name = excluded.display_name, "
-            "created_at = excluded.created_at, modified_at = excluded.modified_at, inventoried_at = excluded.inventoried_at",
-            (item["id"], kind, item.get("displayName"), item.get("createdDateTime"), item.get("lastModifiedDateTime"), stamp))
-        conn.execute("DELETE FROM intune_script_assignments WHERE script_id = ?", (item["id"],))
         for a in item.get("assignments") or []:
             target = a.get("target") or {}
             tk = _INTUNE_TARGETS.get(str(target.get("@odata.type", "")).rsplit(".", 1)[-1].lower())
             if tk is None or (tk[0] == "group" and not target.get("groupId")):
                 continue
-            conn.execute("INSERT OR IGNORE INTO intune_script_assignments (script_id, target, group_id, mode) VALUES (?,?,?,?)",
-                         (item["id"], tk[0], target.get("groupId") or "", tk[1]))
+            rows.append((item["id"], tk[0], target.get("groupId") or "", tk[1]))
+    return rows
+
+
+def _store_intune_scripts(conn: sqlite3.Connection, kind: str, items: list[Json], stamp: str) -> None:
+    """Upsert the scripts of one kind and replace their assignment targets. Run results and `scanned_at` survive."""
+    conn.execute("DELETE FROM intune_script_assignments WHERE script_id IN (SELECT id FROM intune_scripts WHERE kind = ?)", (kind,))
+    conn.executemany(
+        "INSERT INTO intune_scripts (id, kind, display_name, created_at, modified_at, inventoried_at) VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, display_name = excluded.display_name, "
+        "created_at = excluded.created_at, modified_at = excluded.modified_at, inventoried_at = excluded.inventoried_at",
+        [(item["id"], kind, item.get("displayName"), item.get("createdDateTime"), item.get("lastModifiedDateTime"), stamp) for item in items])
+    conn.executemany("INSERT OR IGNORE INTO intune_script_assignments (script_id, target, group_id, mode) VALUES (?,?,?,?)",
+                     _assignment_rows(items))
     conn.execute("DELETE FROM intune_scripts WHERE kind = ? AND inventoried_at <> ?", (kind, stamp))
 
 
@@ -565,22 +760,14 @@ _POLICY_BASE_KEYS = ("assignments", "id", "displayName", "description", "created
 
 def _store_update_policies(conn: sqlite3.Connection, kind: str, items: list[Json], stamp: str) -> None:
     """Upsert the update policies of one kind (keeping their Graph properties) and replace their assignment targets."""
-    for item in items:
-        settings = {k: v for k, v in item.items() if not k.startswith("@") and k not in _POLICY_BASE_KEYS}
-        conn.execute(
-            "INSERT INTO update_policies (id, kind, display_name, created_at, modified_at, settings_json, inventoried_at) VALUES (?,?,?,?,?,?,?) "
-            "ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, display_name = excluded.display_name, created_at = excluded.created_at, "
-            "modified_at = excluded.modified_at, settings_json = excluded.settings_json, inventoried_at = excluded.inventoried_at",
-            (item["id"], kind, item.get("displayName"), item.get("createdDateTime"), item.get("lastModifiedDateTime"),
-             json.dumps(settings), stamp))
-        conn.execute("DELETE FROM update_policy_assignments WHERE policy_id = ?", (item["id"],))
-        for a in item.get("assignments") or []:
-            target = a.get("target") or {}
-            tk = _INTUNE_TARGETS.get(str(target.get("@odata.type", "")).rsplit(".", 1)[-1].lower())
-            if tk is None or (tk[0] == "group" and not target.get("groupId")):
-                continue
-            conn.execute("INSERT OR IGNORE INTO update_policy_assignments (policy_id, target, group_id, mode) VALUES (?,?,?,?)",
-                         (item["id"], tk[0], target.get("groupId") or "", tk[1]))
+    conn.execute("DELETE FROM update_policy_assignments WHERE policy_id IN (SELECT id FROM update_policies WHERE kind = ?)", (kind,))
+    conn.executemany(
+        "INSERT INTO update_policies (id, kind, display_name, created_at, modified_at, settings_json, inventoried_at) VALUES (?,?,?,?,?,?,?) "
+        "ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, display_name = excluded.display_name, created_at = excluded.created_at, "
+        "modified_at = excluded.modified_at, settings_json = excluded.settings_json, inventoried_at = excluded.inventoried_at",
+        [(item["id"], kind, item.get("displayName"), item.get("createdDateTime"), item.get("lastModifiedDateTime"),
+          json.dumps({k: v for k, v in item.items() if not k.startswith("@") and k not in _POLICY_BASE_KEYS}), stamp) for item in items])
+    conn.executemany("INSERT OR IGNORE INTO update_policy_assignments (policy_id, target, group_id, mode) VALUES (?,?,?,?)", _assignment_rows(items))
     conn.execute("DELETE FROM update_policies WHERE kind = ? AND inventoried_at <> ?", (kind, stamp))
 
 
@@ -596,25 +783,25 @@ def _skip_404(fn: Callable[[], T], default: T) -> T:
 
 def _upsert_groups(conn: sqlite3.Connection, graph: GraphClient, stamp: str, say: Progress) -> int:
     """Upsert every group's inventory fields (one paged list; no per-group calls)."""
-    n = 0
+    rows = []
     for g in graph.list_groups():
-        n += 1
-        if n % 500 == 0:
-            say(f"Reading groups ({n} so far)")
-        conn.execute(
-            "INSERT INTO groups (id, display_name, description, created_at, membership_rule, mail_enabled, "
-            "security_enabled, has_license_assignment, group_types, aliases, inventoried_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, description = excluded.description, "
-            "created_at = excluded.created_at, membership_rule = excluded.membership_rule, "
-            "mail_enabled = excluded.mail_enabled, security_enabled = excluded.security_enabled, "
-            "has_license_assignment = excluded.has_license_assignment, group_types = excluded.group_types, "
-            "aliases = excluded.aliases, inventoried_at = excluded.inventoried_at",
-            (g["id"], g.get("displayName"), g.get("description"), g.get("createdDateTime"), g.get("membershipRule"),
-             _int(g.get("mailEnabled")), _int(g.get("securityEnabled")), int(bool(g.get("assignedLicenses"))),
-             ",".join(g.get("groupTypes") or []), json.dumps(_aliases(g)), stamp))
+        rows.append((g["id"], g.get("displayName"), g.get("description"), g.get("createdDateTime"), g.get("membershipRule"),
+                     _int(g.get("mailEnabled")), _int(g.get("securityEnabled")), int(bool(g.get("assignedLicenses"))),
+                     ",".join(g.get("groupTypes") or []), json.dumps(_aliases(g)), stamp))
+        if len(rows) % 500 == 0:
+            say(f"Reading groups ({len(rows)} so far)")
+    say(f"Saving {len(rows)} groups")
+    conn.executemany(
+        "INSERT INTO groups (id, display_name, description, created_at, membership_rule, mail_enabled, "
+        "security_enabled, has_license_assignment, group_types, aliases, inventoried_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, description = excluded.description, "
+        "created_at = excluded.created_at, membership_rule = excluded.membership_rule, "
+        "mail_enabled = excluded.mail_enabled, security_enabled = excluded.security_enabled, "
+        "has_license_assignment = excluded.has_license_assignment, group_types = excluded.group_types, "
+        "aliases = excluded.aliases, inventoried_at = excluded.inventoried_at", rows)
     conn.execute("DELETE FROM groups WHERE inventoried_at <> ?", (stamp,))
     conn.commit()
-    return n
+    return len(rows)
 
 
 # -------------------------------------------------------------------- scan --
@@ -848,6 +1035,7 @@ def _read_mailbox_types(conn: sqlite3.Connection, exchange: ExchangeClient, sign
          for b in boxes if b.get("ExternalDirectoryObjectId")])
     conn.execute("DELETE FROM mailboxes WHERE inventoried_at <> ?", (stamp,))
     conn.commit()
+    repo.mark_analysed(conn, ["mailboxes"], stamp)
 
 
 def _scan_mailbox_details(conn: sqlite3.Connection, exchange: ExchangeClient, signals: Signals, ids: list[str], now: datetime,

@@ -20,7 +20,7 @@ from ..services import sync_runner
 from ..services.extended_signals import evaluate_user
 from ..services._time import days_between, parse_graph_dt
 from ..services.graph import GraphClient
-from ..services.sync import run_inventory, run_scan
+from ..services.sync import run_analysis, run_counts, run_scan
 from ..services.updates import KIND_SHORT, summarize, targets_text
 
 bp = Blueprint("dashboard", __name__)
@@ -31,7 +31,24 @@ TABS: tuple[tuple[str, str], ...] = (("groups", "Groups"), ("apps", "Apps"), ("u
                                       ("dls", "Distribution lists"),
                                       ("mailboxes", "Shared mailboxes"),
                                       ("rules", "Mail flow rules"))
-_TYPE = {"groups": "group", "apps": "app", "users": "user", "intune": "intune_app", "scripts": "intune_script", "updates": "update", "guests": "guest", "members": "member", "dls": "dl", "mailboxes": "mailbox", "rules": "rule"}
+_TYPE = repo.TAB_TYPES
+
+# What analysing each tab reads (shown before the first analysis, so nobody starts something they did not mean to).
+_READS: dict[str, str] = {
+    "groups": "the groups, who uses each one (Conditional Access policies and Intune assignments) and the directory roles, then the owners, members "
+              "and audit activity of the groups you select below (privileged groups are always included)",
+    "apps": "the app registrations with their secrets and age, each app's sign-in activity and the delegated permissions. Owners and application "
+            "permissions are read per app afterwards, with Check apps",
+    "users": "who holds a directory role, and their last sign-in",
+    "intune": "the Intune apps and who each one is assigned to",
+    "scripts": "the PowerShell scripts, macOS shell scripts and remediations, and who each one is assigned to",
+    "updates": "the Windows update rings and update profiles of Intune, and who each one is assigned to",
+    "guests": "the external (guest) users and their last sign-in",
+    "members": "the internal users with their licences and last sign-in",
+    "dls": "the Exchange distribution lists, and the mail flow rules that come with them",
+    "rules": "the Exchange mail flow rules, and the distribution lists that come with them",
+    "mailboxes": "the list of shared, room and equipment mailboxes from Exchange (about 40 seconds on a large tenant)",
+}
 
 CARDS: tuple[tuple[str, str, str | None], ...] = (
     # (label, key, flag code counted; None = scanned-groups card)
@@ -232,11 +249,14 @@ def index() -> str:
     tab = request.args.get("tab", "groups")
     tab = tab if tab in _TYPE else "groups"
     inventory = repo.last_run(conn, "inventory")
-    data = _dashboard_data(conn) if inventory else None
+    analysed = repo.analysed_map(conn)
+    data = _dashboard_data(conn) if (inventory or analysed) else None
+    tab_state = {"analysed_at": analysed.get(tab), "total": repo.tab_total(conn, tab, tab in analysed), "reads": _READS[tab],
+                 "label": dict(TABS)[tab]}
     rows: list[dict[str, Any]] = []
     domains: list[tuple[str, int]] = []
     app_stats: dict[str, Any] | None = None
-    if data:
+    if data and tab in analysed:
         if tab == "apps":
             rows, app_stats = _app_rows(conn, data["flags"])
         elif tab == "updates":
@@ -289,7 +309,8 @@ def index() -> str:
         "dashboard.html", cards=CARDS, tabs=TABS, tab=tab, inventory=inventory, scan=repo.last_run(conn, "scan"),
         latest=repo.last_run(conn, usable_only=False), counts=repo.scan_counts(conn),
         patterns=repo.get_scope_patterns(conn), data=data, rows=rows,
-        tiles=_tiles(tab, data, repo.scan_counts(conn), app_stats) if data else [], flag_codes=flag_codes, domains=domains, mailboxes=mailboxes,
+        tiles=_tiles(tab, data, repo.scan_counts(conn), app_stats) if data and tab in analysed else [], flag_codes=flag_codes, domains=domains,
+        mailboxes=mailboxes, analysed=analysed, tab_state=tab_state,
         syncing=sync_runner.is_running())
 
 
@@ -307,10 +328,20 @@ def _clients() -> tuple[Callable[[], Any], Callable[[], Any], list[str]]:
 @bp.post("/sync/inventory")
 @login_required
 def sync_inventory() -> Response:
-    """Refresh the cheap tenant-wide inventory in the background."""
+    """The inventory: count the objects (a few cheap calls), in the background. Nothing is read in detail or evaluated."""
+    make_graph, _make_exchange, scopes = _clients()
+    started = sync_runner.start_job(connection_factory(), lambda conn: run_counts(conn, make_graph(), scopes))
+    return jsonify(started=started)  # type: ignore[return-value]
+
+
+@bp.post("/sync/analyse/<tab>")
+@login_required
+def sync_analyse(tab: str) -> Response:
+    """Analyse one tab in the background: read what it needs and evaluate only that kind of object."""
+    if tab not in _TYPE:
+        return jsonify(error="unknown tab"), 404  # type: ignore[return-value]
     make_graph, make_exchange, scopes = _clients()
-    started = sync_runner.start_job(connection_factory(),
-                                    lambda conn: run_inventory(conn, make_graph(), scopes, exchange=make_exchange()))
+    started = sync_runner.start_job(connection_factory(), lambda conn: run_analysis(conn, make_graph(), scopes, tab, exchange=make_exchange()))
     return jsonify(started=started)  # type: ignore[return-value]
 
 
@@ -328,6 +359,11 @@ def sync_scan(kind: str) -> Response:
     if kind not in _PATTERN_ARG:
         return jsonify(error="unknown kind"), 404  # type: ignore[return-value]
     patterns = str((request.get_json(silent=True) or {}).get("patterns", ""))
+    if kind == "groups":    # the groups tab has no separate "analyse": scanning reads the list and the usage first, then the selected groups
+        repo.save_scope_patterns(get_db(), "groups", patterns)
+        make_graph, make_exchange, scopes = _clients()
+        started = sync_runner.start_job(connection_factory(), lambda conn: run_analysis(conn, make_graph(), scopes, "groups", group_patterns=patterns))
+        return jsonify(started=started)  # type: ignore[return-value]
     if kind != "mailbox_types":
         repo.save_scope_patterns(get_db(), kind, patterns)  # type: ignore[arg-type]
     make_graph, make_exchange, scopes = _clients()

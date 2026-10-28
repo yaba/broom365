@@ -22,6 +22,19 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     error         TEXT
 );
 
+-- What the inventory counted: only totals (cheap), per kind of object. A tab shows its total here until it is analysed.
+CREATE TABLE IF NOT EXISTS inventory_totals (
+    kind        TEXT PRIMARY KEY,
+    total       INTEGER NOT NULL,
+    counted_at  TEXT NOT NULL
+);
+
+-- Which tabs have been analysed (their data read and evaluated), and when.
+CREATE TABLE IF NOT EXISTS analyses (
+    tab          TEXT PRIMARY KEY,
+    analysed_at  TEXT NOT NULL
+);
+
 -- Current state per signal (upserted by whichever run touched it); drives /settings.
 CREATE TABLE IF NOT EXISTS signal_availability (
     signal        TEXT PRIMARY KEY,   -- e.g. 'group_audit_activity', 'sp_sign_in_activity'

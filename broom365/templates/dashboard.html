@@ -5,8 +5,8 @@
 {% macro scope_panel(kind, title, placeholder, noun, reads, note) %}
 <section class="scope" aria-label="{{ title }} scan scope">
   <div class="scope-head"><h2>Check on demand</h2>
-    <span class="muted">{{ counts[kind ~ '_scanned'] }} of {{ counts[kind ~ '_total'] }} {{ noun }} checked</span></div>
-  <p class="muted small">The inventory only lists things. Checking reads {{ reads }}, and only for the {{ noun }} you select. One pattern per line:
+    {% if counts[kind ~ '_total'] %}<span class="muted">{{ counts[kind ~ '_scanned'] }} of {{ counts[kind ~ '_total'] }} {{ noun }} checked</span>{% endif %}</div>
+  <p class="muted small">Checking reads {{ reads }}, and only for the {{ noun }} you select. One pattern per line:
     <code>*</code> any characters, <code>?</code> one character, <code>!</code> prefix to exclude, <code>#</code> comment. {{ note }}</p>
   <textarea id="scope-{{ kind }}" data-kind="{{ kind }}" rows="3" aria-label="{{ title }} patterns" placeholder="{{ placeholder }}">{{ patterns[kind] }}</textarea>
   <div class="preview" id="pv-{{ kind }}"></div>
@@ -17,12 +17,10 @@
 <section class="freshness" id="freshness" data-syncing="{{ 'true' if syncing else 'false' }}">
   <div>
     {% if inventory %}
-      <strong>Inventory</strong>
+      <strong>Totals counted</strong>
       <time datetime="{{ inventory['finished_at'] }}">{{ inventory['finished_at'][:16].replace('T', ' ') }} UTC</time>
       <span class="sep">&middot;</span>
-      {% if scan %}<strong>Last scan</strong>
-        <time datetime="{{ scan['finished_at'] }}">{{ scan['finished_at'][:16].replace('T', ' ') }} UTC</time>
-      {% else %}<strong>No scan yet</strong>{% endif %}
+      {% if analysed %}<strong>{{ analysed | length }} of {{ tabs | length }} tabs analysed</strong>{% else %}<strong>nothing analysed yet</strong>{% endif %}
       {% if (inventory['status'] == 'partial') or (scan and scan['status'] == 'partial') %}
         <span class="pill warn">some signals unavailable</span>{% endif %}
     {% elif latest and latest['status'] == 'failed' %}
@@ -32,7 +30,7 @@
     {% endif %}
     <span class="muted" id="sync-progress"></span>
   </div>
-  <button type="button" id="inventory" class="btn secondary">Refresh inventory</button>
+  <button type="button" id="inventory" class="btn secondary" title="Counts groups, apps and users: a few seconds. Nothing is analysed.">Count objects</button>
 </section>
 
 {% if data %}
@@ -47,9 +45,27 @@
   <nav class="tabs" aria-label="Object types">
     {% for key, label in tabs %}
       <a href="{{ url_for('dashboard.index', tab=key) }}" class="{{ 'active' if key == tab }}" {% if key == tab %}aria-current="page"{% endif %}>{{ label }}
-        <span class="count" title="Flagged {{ key }}">{{ data.tab_counts[key] }}</span></a>
+        {% if key in analysed %}<span class="count" title="Flagged {{ key }}">{{ data.tab_counts[key] }}</span>{% endif %}</a>
     {% endfor %}
   </nav>
+
+  {% if not tab_state.analysed_at %}
+  <section class="analyse-card" aria-label="{{ tab_state.label }} not analysed yet">
+    <p class="total">{% if tab_state.total is not none %}<strong>{{ tab_state.total }}</strong> {{ tab_state.label | lower }} in the tenant{% else %}<span class="muted">{{ tab_state.label }}: not counted yet</span>{% endif %}
+      <span class="pill">Not analysed yet</span></p>
+    <p class="muted">Analysing reads {{ tab_state.reads }}. Nothing else is read: the other tabs stay as they are. You can leave this page, the work goes on in the server.</p>
+    {% if tab == 'groups' %}
+      {{ scope_panel('groups', 'Groups', 'win10-app-deployment*', 'groups', 'owners, members, nesting and audit activity', 'Groups holding a directory role are always checked.') }}
+    {% elif tab == 'mailboxes' %}
+      <p><button type="button" class="btn scan" data-kind="mailbox_types">Read mailbox list (about 40 s)</button></p>
+    {% else %}
+      <p><button type="button" class="btn analyse" data-tab="{{ tab }}">Analyse {{ tab_state.label | lower }}</button></p>
+    {% endif %}
+  </section>
+  {% else %}
+  <p class="analysed-bar muted small">Analysed <time datetime="{{ tab_state.analysed_at }}">{{ tab_state.analysed_at[:16].replace('T', ' ') }} UTC</time>
+    &middot; {{ tab_state.total }} {{ tab_state.label | lower }}
+    {% if tab not in ('groups', 'mailboxes') %}<button type="button" class="btn secondary analyse" data-tab="{{ tab }}">Analyse again</button>{% endif %}</p>
 
   {% if tiles %}
   <section class="strip" aria-label="Summary of {{ tab }}">
@@ -70,7 +86,7 @@
     {{ scope_panel('apps', 'Apps', 'Contoso*', 'apps', 'owners and application permissions', 'App registrations of this tenant.') }}
   {% elif tab == 'dls' %}
     <section class="scope">
-      <div class="scope-head"><h2>Exchange distribution lists</h2><span class="muted">listed by the inventory</span></div>
+      <div class="scope-head"><h2>Exchange distribution lists</h2><span class="muted">read when you analyse</span></div>
       <p class="muted small">Distribution lists, mail-enabled security groups and dynamic lists, read from Exchange Online in one call. <strong>No owner</strong> comes straight from the
         inventory. To know whether a list is <strong>used</strong>, check it below: Broom365 counts its members and asks message trace whether any mail was addressed to it
         in the last 89 days (the longest history Exchange keeps). A list with no mail that is also empty or ownerless, and that no transport rule mentions, is flagged as
@@ -90,14 +106,14 @@
     </section>
   {% elif tab == 'rules' %}
     <section class="scope">
-      <div class="scope-head"><h2>Exchange mail flow (transport) rules</h2><span class="muted">listed by the inventory</span></div>
+      <div class="scope-head"><h2>Exchange mail flow (transport) rules</h2><span class="muted">read when you analyse</span></div>
       <p class="muted small">Rules that are <strong>disabled</strong>, <strong>expired</strong>, only <strong>auditing</strong> (not enforcing), or that name an address of this tenant which matches
         no distribution list, mailbox, user alias or group (<strong>dead reference</strong>). The last one needs the mailbox list to have been read (Shared mailboxes tab) and cannot see mail contacts
         or public folders, so confirm it in Exchange before acting. Nothing here proves a rule is unused: Exchange does not report how often a rule matched.</p>
     </section>
   {% elif tab == 'members' %}
     <section class="scope">
-      <div class="scope-head"><h2>Internal users</h2><span class="muted">listed by the inventory</span></div>
+      <div class="scope-head"><h2>Internal users</h2><span class="muted">read when you analyse</span></div>
       <p class="muted small">Ordinary (non-guest) accounts that cost money or linger unused. <strong>Disabled with licences</strong>: the account cannot be used but still holds paid
         licences. <strong>Stale</strong>: an enabled account with no sign-in for a long time (or created long ago and never signed in); MEDIUM when it holds a paid licence.
         Free licences (Power Automate free, Power BI free...) do not count as spend. Accounts synced from on-premises AD must be changed there. Service and shared accounts may not
@@ -109,7 +125,7 @@
     </section>
   {% elif tab == 'guests' %}
     <section class="scope">
-      <div class="scope-head"><h2>External (guest) users</h2><span class="muted">listed by the inventory</span></div>
+      <div class="scope-head"><h2>External (guest) users</h2><span class="muted">read when you analyse</span></div>
       <p class="muted small">People from other organisations who were invited. <strong>Stale</strong> guests have not signed in for a long time (or were added long ago and never
         signed in); <strong>pending</strong> ones never accepted the invitation. They keep an access path into the tenant, so they are candidates for review. A disabled guest
         is already inert (LOW). Search by name, e-mail or the guest's company domain to clean up a whole partner at once. Thresholds are in Settings.</p>
@@ -119,7 +135,7 @@
     </section>
   {% elif tab == 'scripts' %}
     <section class="scope">
-      <div class="scope-head"><h2>Intune scripts and remediations</h2><span class="muted">listed by the inventory</span></div>
+      <div class="scope-head"><h2>Intune scripts and remediations</h2><span class="muted">read when you analyse</span></div>
       <p class="muted small">PowerShell scripts, macOS shell scripts and Remediations. A script is flagged when it is <strong>unassigned</strong>, targets
         only <strong>empty groups</strong>, has <strong>never succeeded</strong>, is an assigned remediation that has gone <strong>idle</strong>, or is
         <strong>old</strong>. Old + any of the others is <code>LIKELY_OBSOLETE_SCRIPT</code>. Unassigned, old and empty-target come straight from the inventory; failing and
@@ -127,7 +143,7 @@
     </section>
   {% elif tab == 'updates' %}
     <section class="scope">
-      <div class="scope-head"><h2>Windows update policies</h2><span class="muted">evaluated automatically from the inventory</span></div>
+      <div class="scope-head"><h2>Windows update policies</h2><span class="muted">evaluated when you analyse</span></div>
       <p class="muted small">Update rings, feature update profiles, expedite (quality) profiles and driver update profiles of Intune, with what each one sets and who it reaches.
         A policy is flagged when it is <strong>assigned to nobody</strong> or only to empty groups, when it <strong>overlaps</strong> another policy of the same kind (a device in both
         gets two sets of settings), when a ring sets <strong>no deadline</strong> (Microsoft recommends deadlines), when a ring <strong>pauses</strong> updates (a pause ends after 35 days),
@@ -137,7 +153,7 @@
     </section>
   {% elif tab == 'intune' %}
     <section class="scope">
-      <div class="scope-head"><h2>Intune apps</h2><span class="muted">evaluated automatically from the inventory</span></div>
+      <div class="scope-head"><h2>Intune apps</h2><span class="muted">evaluated when you analyse</span></div>
       <p class="muted small">Two kinds of cleanup candidates. <strong>Uninstall-only</strong> apps have only uninstall assignments and no required/available one:
         they are no longer deployed, only removed. <strong>Unassigned</strong> apps are deployed to nobody; once you check an app's relations below, apps that another app depends on are left out,
         and an old version superseded by a newer app is called out (deleting it removes the supersedence link). Exclusions are ignored. Uninstall-only apps appear straight from the inventory.</p>
@@ -260,10 +276,11 @@
       {% else %}Nothing was flagged among the {{ counts[tab ~ '_scanned'] }} scanned {{ tab }}.{% endif %}
     </p>
   {% endif %}
+  {% endif %}
 {% else %}
   <section class="empty-state">
-    <h2>No inventory yet</h2>
-    <p>Start with <strong>Refresh inventory</strong>: it lists groups, apps and roles from Microsoft Graph using a few bulk calls. Then pick which objects to scan in depth.</p>
+    <h2>Nothing counted yet</h2>
+    <p>Press <strong>Count objects</strong> to see how many groups, apps and users the tenant has: a few seconds, nothing is analysed. Then open a tab and analyse only what you want to look at.</p>
   </section>
 {% endif %}
 {% endblock %}

@@ -213,13 +213,17 @@ def scanned_groups(conn):
 
 
 # ------------------------------------------------------------- inventory ----
-def test_inventory_makes_no_per_object_calls_and_produces_no_group_or_app_flags(conn):
+def test_inventory_makes_no_per_object_calls_flags_no_group_and_guesses_no_app_permission(conn):
     g = FakeGraph()
     run_inventory(conn, g, ALL_SCOPES, now=NOW)
     assert g.calls == []
     assert conn.execute("SELECT COUNT(*) FROM groups").fetchone()[0] == 5
     assert scanned_groups(conn) == set()
-    assert conn.execute("SELECT COUNT(*) FROM flagged_objects WHERE object_type IN ('group','app')").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM flagged_objects WHERE object_type = 'group'").fetchone()[0] == 0
+    # an app that was not checked is judged on what is known (its secrets, age, sign-in), never on permissions it was not asked about
+    app_flags = {r[0] for r in conn.execute("SELECT flag FROM flags WHERE object_type = 'app'")}
+    assert app_flags == {"EXPIRED_SECRET", "STALE_APP", "LIKELY_ABANDONED_APP"}
+    assert conn.execute("SELECT COUNT(*) FROM applications WHERE scanned_at IS NOT NULL").fetchone()[0] == 0
 
 
 def test_inventory_still_flags_dormant_privileged_user(conn):

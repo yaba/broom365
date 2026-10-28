@@ -88,10 +88,10 @@ class GraphClient:
             yield from page.get("value", [])
             next_url = page.get("@odata.nextLink")
 
-    def count(self, url: str) -> int:
-        """Return `$count` for a collection (requires ConsistencyLevel: eventual)."""
+    def count(self, url: str, odata_filter: str | None = None) -> int:
+        """Return `$count` for a collection, optionally filtered (requires ConsistencyLevel: eventual). One cheap call."""
         resp = self._http.get(
-            f"{url}/$count", timeout=60,
+            f"{url}/$count", timeout=60, params={"$filter": odata_filter} if odata_filter else None,
             headers={"Authorization": f"Bearer {self._token_provider()}", "ConsistencyLevel": "eventual"},
         )
         if resp.status_code in (401, 403):

@@ -85,7 +85,7 @@
   });
 
   // ---- background jobs
-  const buttons = Array.from(document.querySelectorAll('#inventory, .scan'));
+  const buttons = Array.from(document.querySelectorAll('#inventory, .scan, .analyse'));
   const progress = document.getElementById('sync-progress');
   let timer = null;
 
@@ -121,6 +121,7 @@
 
   const inv = document.getElementById('inventory');
   if (inv) inv.addEventListener('click', () => post('/sync/inventory'));
+  document.querySelectorAll('.analyse').forEach((b) => b.addEventListener('click', () => post('/sync/analyse/' + b.dataset.tab)));
   document.querySelectorAll('.scan').forEach((b) => b.addEventListener('click', () =>
     post('/sync/scan/' + b.dataset.kind, { patterns: (document.getElementById('scope-' + b.dataset.kind) || { value: '' }).value })));
   if (document.getElementById('freshness').dataset.syncing === 'true') watch();

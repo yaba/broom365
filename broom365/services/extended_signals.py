@@ -193,8 +193,10 @@ def evaluate_app(app: AppFacts, t: Thresholds, now: datetime) -> Assessment:
 
     expired = expired_secret_flag(app, now, t)
     expiring = expiring_secret_flag(app, now, t)
-    danger = dangerous_permission_flag(app, t)
-    broad = broad_read_permission_flag(app, t)
+    danger = dangerous_permission_flag(app, t) if app.checked else None      # permissions are not guessed for an app that was not checked
+    broad = broad_read_permission_flag(app, t) if app.checked else None
+    if not app.checked:
+        unavailable.append("Owners and application permissions not read yet: use Check apps to find out about high-risk permissions.")
     for f in (expired, expiring, danger, broad):
         if f:
             flags.append(f)

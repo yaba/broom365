@@ -55,7 +55,7 @@ actually carries and tells you if any are missing (see *Permission preflight*).
 
 Each tab starts with its own summary strip; every tile is also a filter (click it to show only those rows, click again to clear). The **Apps** tab lists every
 app registration, not only the flagged ones: *App registrations*, *Expired secrets*, *Apps with no owner*, *Older than a year*, *Younger than a month* and
-*High-risk Graph permissions*. Secrets and age come with the inventory; owners and permissions exist only for apps you checked in depth, so for the others the tile
+*High-risk Graph permissions*. Secrets and age come with the analysis; owners and permissions exist only for apps you checked in depth, so for the others the tile
 shows a dash and the row says "not checked", never a zero.
 
 ### Accounts
@@ -169,24 +169,36 @@ scopes in the token response.
 
 ---
 
-## How it works: inventory, then check on demand
+## How it works: count, analyse a tab, check in detail
 
-Tenants can have thousands of groups and hundreds of apps and scripts, so Broom365 never checks everything in depth.
+Tenants can have thousands of groups and hundreds of apps and scripts, and you rarely want to look at all of it at once. So Broom365 works on demand, one tab at a time:
 
-1. **Refresh inventory** only *lists* things: groups, users that hold a directory role, all external (guest) users, app registrations and service principals, Intune apps,
-   scripts and remediations, plus the tenant-wide lists that say where groups are used (delegated grants, Conditional Access, Intune profiles and
-   policies, soft-deleted service principals, sign-in activity). Every call is a paged list, one request per page, **never one request per
-   object** (the few users who hold a directory role are looked up 15 per request, together with their sign-in activity). It never reads
-   dependencies, supersedence, or script run results.
-2. **Check on demand** exactly what you need. Each of the four tabs has its own panel with name patterns, and each check is a per-object read:
+1. **Count objects** (the inventory) only counts: how many groups, apps, internal users and guests the tenant has. A few cheap calls, a few seconds, nothing is read in
+   detail and nothing is evaluated, so no findings appear yet. Intune and Exchange cannot be counted cheaply: those tabs show their total once analysed.
+2. **Analyse a tab** reads only what that tab needs and evaluates only that kind of object. Analysing the apps never touches the groups, and the other way round. Each tab says before
+   you start what it will read. The result is kept, with when it was analysed; analyse again when you want fresh data.
+
+   | Tab | Analysing reads | Evaluates |
+   |---|---|---|
+   | Groups | the groups, who uses them (Conditional Access, Intune), the directory roles; then owners, members and audit activity of the groups the **patterns** select | groups (and the privileged users that come with the roles) |
+   | Apps | app registrations with secrets and age, sign-in activity, delegated permissions | expired or expiring secrets, stale and abandoned apps; owners and permissions are *not* guessed |
+   | Users | who holds a directory role, and their sign-in | dormant, disabled or external privileged users |
+   | Intune apps, Scripts, Updates | their own list with assignments | unassigned, uninstall-only, old, update-policy findings |
+   | Guests, Internal users | their own list, licences and sign-in | stale and pending guests, stale or leftover accounts |
+   | Distribution lists, Mail flow rules | the Exchange lists and rules (one read for both) | unused lists, dead rules |
+   | Shared mailboxes | the mailbox list from Exchange | (the detail check below reads each mailbox) |
+
+3. **Check in detail** the objects you pick, with name patterns, for what is too expensive to read for everything. This is the per-object read:
 
    | Tab | What a check reads | Needed for |
    |---|---|---|
    | Groups | owners, member count, nesting, audit activity, app assignments | `EMPTY_GROUP`, `NO_OWNER`, `STALE`, `UNKNOWN_USE`, `ORPHANED_APP_ASSIGNMENT` |
-   | Apps | owners, application permissions | credential, permission and abandoned-app flags |
+   | Apps | owners, application permissions | `NO_OWNER`, high-risk permission and risk-without-usage flags |
    | Intune apps | dependency and supersedence links | telling an unused app from an old version or a dependency (`UNASSIGNED_APP`) |
    | Scripts | run results (success / error counts, last run) | `FAILING_SCRIPT`, `IDLE_REMEDIATION` |
    | Guests | the groups and Teams each guest belongs to, nested groups included (1 call per guest) | what access a stale or pending guest still has |
+
+   The job runs in the server: you can leave the page, and a bar at the top of every page shows its progress. Only one job runs at a time.
 
    Patterns, one per line:
 
@@ -201,13 +213,12 @@ Tenants can have thousands of groups and hundreds of apps and scripts, so Broom3
    Matching is case-insensitive on the display name (for guests also on the e-mail and the company domain: `partner.com` selects a whole company, `*@partner.com` matches e-mails). Exclusions alone select nothing. A live preview shows how many inventoried objects match before
    you check. To check one object, use its exact name.
 
-   Checks **accumulate**: checking `win10-app-deployment*` and later `sw-*` keeps both. Re-running the inventory preserves everything already checked
+   Checks **accumulate**: checking `win10-app-deployment*` and later `sw-*` keeps both. Analysing a tab again preserves everything already checked
    and removes objects that disappeared from the tenant (with their checked data). If a list cannot be read, what is stored is kept, not wiped.
    Groups that hold a directory role are always included in group checks so privileged-orphan detection never depends on remembering them.
 
 Whatever has not been checked produces **no flag that depends on that check**: it has not been evaluated, which is different from being clean. The UI
-always shows "checked N of M". Flags that need only inventory data (for example an uninstall-only Intune app, or an unassigned or old script) appear
-straight after the inventory.
+always shows "checked N of M", and a tab that was not analysed shows only its total.
 
 ### Is this group really unused?
 
@@ -298,7 +309,7 @@ The **Intune apps** tab lists apps that look like leftovers.
 ### Intune scripts and remediations
 
 The **Scripts** tab covers PowerShell scripts, macOS shell scripts and Remediations (proactive remediations). Besides age, it uses what Intune knows.
-Unassigned, empty-target and old come straight from the inventory; failing and idle need the **run results**, which you read on demand for the scripts you choose:
+Unassigned, empty-target and old come straight from the analysis; failing and idle need the **run results**, which you read on demand for the scripts you choose:
 
 - **Unassigned**: it runs on no device.
 - **Empty targets**: every target group is empty (the groups must have been scanned to know this).
@@ -312,7 +323,7 @@ Broom365 is read-only: it points at candidates, it does not delete anything. The
 ### Windows update policies (Intune)
 
 The **Updates** tab lists every update ring (`windowsUpdateForBusinessConfiguration`), feature update profile, expedite (quality update) profile and driver update
-profile, with what each sets and who it reaches. They come with the inventory (no check needed), through the same `DeviceManagementConfiguration.Read.All` read as
+profile, with what each sets and who it reaches. They come with the tab's analysis (no check needed), through the same `DeviceManagementConfiguration.Read.All` read as
 the other Intune profiles. Devices are not read: this is about the policies. Everything is a candidate for review, and the checks stick to what Microsoft documents or to
 what the policy itself reports:
 
@@ -331,7 +342,7 @@ The groups these policies target also count as *used* on each group page.
 ### External (guest) users
 
 The **Guests** tab separates external identities from internal ones. External users are invited once, often for a project, and many never come back
-while still keeping an access path into the tenant. The inventory reads **all** guests as one paged list, with their last sign-in (about 120 per
+while still keeping an access path into the tenant. Analysing the tab reads **all** guests as one paged list, with their last sign-in (about 120 per
 request), and flags two things:
 
 - **Stale** (`STALE_GUEST`): no sign-in for longer than `stale_days_guest` (default 365), or added longer ago than that and never signed in. A guest
@@ -348,7 +359,7 @@ check, on demand, the groups and Teams of the guests you select (by name, e-mail
 The explanation then lists the memberships, Teams first, and keeps two kinds apart: memberships **by assignment** (a Team, an assigned group), which are
 deliberate access, and **dynamic (rule-based) groups** such as `All Users`, which catch nearly every guest automatically. A guest whose only memberships are
 dynamic is reported as having no deliberate group access to lose; a guest in no group at all says so. Guests that have not been checked are flagged as before,
-with a note that their memberships are still unknown. What you checked survives a re-inventory, and the guest CSV gains the membership columns.
+with a note that their memberships are still unknown. What you checked survives analysing the tab again, and the guest CSV gains the membership columns.
 
 **Permissions, in two tiers.** The built-in list has 114 Microsoft Graph permissions (in `broom365/config.py`), split in two lists, both editable in Settings:
 
@@ -368,7 +379,7 @@ buttons) brings them back. Broom365 never calls a permission "unnecessary".
 
 ### Internal users
 
-The **Internal users** tab covers ordinary (non-guest) accounts, read in the inventory as one paged list with their licences and last sign-in (about 120 per
+The **Internal users** tab covers ordinary (non-guest) accounts, read by the analysis as one paged list with their licences and last sign-in (about 120 per
 request; 2,900 users in about 15 seconds). It reports two things:
 
 - **Disabled with licences** (`DISABLED_LICENSED_MEMBER`): the account cannot be used but still holds a **paid** licence, so you pay for nothing. Free licences
@@ -385,11 +396,11 @@ Privileged accounts stay on the Users tab.
 
 ### Distribution lists (Exchange)
 
-The inventory reads all lists, dynamic lists, transport rules and the tenant's mail domains in four calls (needs `Exchange.ManageAsApp` plus an Entra role such as Global Reader on the
+Analysing the tab reads all lists, dynamic lists, transport rules and the tenant's mail domains in four calls (needs `Exchange.ManageAsApp` plus an Entra role such as Global Reader on the
 app). Members and mail traffic are per-list reads, so you pick lists by name or address pattern (same syntax as the other tabs) and press *Check*. Traffic is
 a message trace over the last 89 days (the longest Exchange keeps), about 4 s per list without mail.
 
-- `DL_NO_OWNER` (LOW): no owner. Known from the inventory.
+- `DL_NO_OWNER` (LOW): no owner. Known from the analysis.
 - `DL_EMPTY` (MEDIUM): checked, no members.
 - `DL_NO_MAIL` (MEDIUM): checked, no mail addressed to it in 89 days.
 - `LIKELY_UNUSED_DL` (MEDIUM): no mail, empty or ownerless, and no transport rule mentions it.
@@ -399,7 +410,7 @@ If transport rules or the trace cannot be read, the verdict is withheld and the 
 ### Shared, room and equipment mailboxes (Exchange)
 
 These accounts cannot sign in with a password, so they are not "stale users"; what matters is whether anyone still uses them. Press **Read mailbox list**
-(one Exchange read, about 30-40 s on 1,700 mailboxes) on the *Shared mailboxes* tab: that list is the inventory of the tab (it also separates mailboxes
+(one Exchange read, about 30-40 s on 1,700 mailboxes) on the *Shared mailboxes* tab: that list is what the tab analyses (it also separates mailboxes
 from leftover accounts on the Internal users tab). Then pick mailboxes by name or address pattern and press *Check mailboxes* (about 3-7 s each): Broom365 reads
 the last sign-in and item count (`Get-MailboxStatistics`), who has Full Access (`Get-MailboxPermission`) and Send As (`Get-RecipientPermission`), and asks message
 trace for mail received in the last 89 days. Holders are matched against the internal users: a bare SID is a **deleted** account, a disabled account is **disabled**.
@@ -413,7 +424,7 @@ A service or app sending as the mailbox, or a forwarding rule, leaves no trace B
 
 ### Mail flow (transport) rules
 
-Rules come with the inventory (one list), so the *Mail flow rules* tab needs no check:
+Rules come with the analysis (one list), so the *Mail flow rules* tab needs no check:
 
 - `RULE_DISABLED`, `RULE_EXPIRED` (expiry date passed), `RULE_NOT_ENFORCING` (mode is not Enforce: it only tests or audits): all LOW.
 - `RULE_DEAD_REFERENCE` (LOW): the rule names an address of this tenant (one of the accepted domains) that matches no distribution list, mailbox, user
@@ -485,9 +496,9 @@ Every page has an **Export this tab (CSV)** button next to the filters, and the 
 
 Saving settings recomputes flags from stored data; nothing is read from Graph.
 
-**Delete database** (Settings, bottom) removes everything stored locally: inventory, scans, flags, saved thresholds and
-scope patterns. Type `DELETE` to confirm; it is refused while a sync runs. The tenant is never touched, and *Refresh
-inventory* rebuilds it. There are no data migrations: after upgrading, delete the database if the app complains about
+**Delete database** (Settings, bottom) removes everything stored locally: totals, analyses, scans, flags, saved thresholds and
+scope patterns. Type `DELETE` to confirm; it is refused while a sync runs. The tenant is never touched, and counting the objects and
+analysing the tabs again rebuilds it. There are no data migrations: after upgrading, delete the database if the app complains about
 a missing column.
 
 ---

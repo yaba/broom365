@@ -72,6 +72,14 @@ class DemoGraph:
                 for i, a in enumerate(_APPS)]
         return sps
 
+    def count(self, url: str, odata_filter: str | None = None) -> int:
+        """The totals the inventory asks for."""
+        if url.endswith("/groups"):
+            return len(self.list_groups())
+        if url.endswith("/applications"):
+            return len(self.list_applications())
+        return len(self.list_guests()) if odata_filter and "Guest" in odata_filter else len(self.list_members())
+
     def list_applications(self) -> list[Json]:
         out = []
         for i, (name, exp, soon, valid, _, _) in enumerate(_APPS):

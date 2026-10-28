@@ -39,7 +39,7 @@ def flagged_count():
 def test_settings_page_shows_unavailable_signal_with_reason(client):
     html = client.get("/settings").get_data(as_text=True)
     assert "group_audit_activity" in html and "unavailable" in html and "Graph returned 403" in html
-    assert "Re-sync inventory from Graph" in html and "Used for" in html
+    assert "Count the objects again" in html and "Used for" in html
 
 
 def test_save_updates_thresholds_and_recomputes_flags(client):
