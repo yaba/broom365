@@ -68,8 +68,8 @@ five failed attempts lock an account for five minutes). There are two roles:
 
 Admins create accounts on the **Accounts** page with a temporary password; the person must choose their own at the first
 sign-in, and an admin can reset a password the same way. There is always at least one admin. *Delete database* removes the
-synced data but keeps the accounts and the saved Entra connection. The first admin starts without a password, so open the
-page yourself right after the first start, before exposing the port to others.
+synced data but keeps the accounts and the saved Entra connection. The installer sets the first admin's password. (When the database comes from
+`DATABASE_URL` and has no accounts yet, `admin` starts with an empty password that must be changed at the first sign-in: open the page right after starting.)
 
 The Entra connection is stored in the database. The client secret is **encrypted** with the key chosen in the installer (or the `BROOM_KEY` environment variable, which wins when set);
 keep that key, because without it the secret has to be entered again. `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` and `SECRET_KEY` in the
@@ -96,23 +96,25 @@ The image contains Microsoft's ODBC driver, which Microsoft's licence does not c
 registry rather than publishing it. Start from your own base image with `--build-arg BASE_IMAGE=...` (Python 3.11+; the Dockerfile installs the Microsoft ODBC driver when the base lacks it, so building
 accepts Microsoft's licence terms for that driver).
 
-`docker-compose.prod.yml` is the minimal stack for production (for example in Portainer): only Broom365, one volume, and `BROOM_IMAGE` as the only required variable.
-`docker compose up --build` (`docker-compose.yml`) builds and runs it the same way; for a throw-away SQL Server while developing, add `--profile mssql` and set `MSSQL_SA_PASSWORD`
-(and `MSSQL_IMAGE` to your own registry's copy if you do not use Docker Hub). The image runs one Gunicorn worker with threads, because a sync
-job runs in-process, one at a time. The Python test suite also passes inside the image (Python 3.11).
+`docker-compose.prod.yml` is the minimal stack for production (for example in Portainer): only Broom365 and one volume; set `BROOM_IMAGE` to the image to run, or write the image name in the file.
+`docker compose up --build` (`docker-compose.yml`) builds and runs it for trying it out. To try SQL Server without having one, add `--profile mssql` and `MSSQL_SA_PASSWORD`
+(`MSSQL_SA_PASSWORD='...' docker compose --profile mssql up --build`), then use server `mssql`, port 1433, database `broom365`, user `sa` in the installer.
+The image runs one Gunicorn worker with threads, because a sync job runs in-process, one at a time. The Python test suite also passes inside the image (Python 3.11).
 
 `FLASK_DEBUG=1` enables auto-reload when using `python run.py`; leave it off anywhere else.
 
+**Environment variables** (all optional; when set they win over what the installer saved):
+
 | Variable | Meaning |
 |---|---|
-| `BROOM_KEY` | Optional: the encryption key (the installer saves one otherwise); encrypts the client secret stored in the database |
-| `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` | Optional development fallback for the Entra connection (normally entered in Settings) |
-| `SECRET_KEY` | Optional; the session signing key. If unset, one is generated once and kept in the database |
-| `DATABASE_PATH` | SQLite file (default `instance/broom365.sqlite`); `bootstrap.json` and the sessions live in the same folder |
-| `DATABASE_URL` | Production database, e.g. `mssql+pyodbc://user:password@host:1433/broom365?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes`. Overrides `DATABASE_PATH`. Any ODBC option can be added as `?Option=value&Option2=value2` (`driver`, `Encrypt`, `TrustServerCertificate`, `ApplicationIntent`, `MultiSubnetFailover`, `Authentication`, `Trusted_Connection`, `Connection Timeout`...); an option named like a generated part (`Server`, `Database`, `UID`, `PWD`) replaces it, a named instance is written `host%5Cinstance`, and user and password are optional. A complete ODBC string also works: `mssql+pyodbc:///?odbc_connect=DRIVER={ODBC+Driver+18+for+SQL+Server};SERVER=host,1433;DATABASE=db;UID=u;PWD=p`. Unless the URL sets `Encrypt` or `TrustServerCertificate` (or names a `DSN`), the connection is encrypted but the server's certificate is accepted as is, so a self-signed certificate
-works without any configuration; add `Encrypt=yes&TrustServerCertificate=no` to require a trusted certificate. The password may contain special characters (`# / ? @ :`) as typed; only a literal `%` should be written `%25`. Needs the Microsoft ODBC driver and `pyodbc`; tables are created on start. SQLite stays the default for development and tests |
+| `DATABASE_URL` | The SQL Server connection, as described above. If unset, the installer's choice is used (SQL Server or the SQLite file) |
+| `BROOM_KEY` | The encryption key for the client secret stored in the database (the installer saves one otherwise) |
+| `DATABASE_PATH` | The SQLite file (default `instance/broom365.sqlite`); `bootstrap.json` and the sessions live in the same folder |
+| `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET` | Development fallback for the Microsoft 365 connection (normally entered on the Connect page or in Settings) |
+| `SECRET_KEY` | The session signing key. If unset, one is generated once and kept in the database |
 | `AUTH_MODE` | `app` (default, app-only) or `delegated` (interactive user sign-in) |
 | `REDIRECT_URI` | `delegated` mode only; must match the registered redirect URI, e.g. `http://localhost:5000/auth/callback` |
+| `HOST`, `PORT` | For `python -m broom365.wsgi` only (default `127.0.0.1:5000`) |
 
 ---
 
@@ -504,38 +506,47 @@ a missing column.
 This is built for a single tenant and a single instance.
 
 - **Who can open the UI.** The app holds tenant-wide read access, so every page needs a Broom365 account (see *Accounts*).
-  Put it behind HTTPS and set `BROOM_KEY`. Passwords are the only factor; there is no MFA, so keep it on an internal network.
+  Put it behind HTTPS. Passwords are the only factor; there is no MFA, so keep it on an internal network.
 
-- **Sessions** are stored in server-side filesystem files (`instance/sessions`). App mode keeps its Graph token only
+- **Sessions** are stored in server-side filesystem files (`sessions/` next to the database settings, in `instance/`). App mode keeps its Graph token only
   in memory. In delegated mode the MSAL token cache is also kept in the session, so production needs a proper
   shared, encrypted cache (for example Redis, or an encrypted table) keyed per user.
-- Serve over **HTTPS** and set `SESSION_COOKIE_SECURE=True`. Use a strong `SECRET_KEY`.
+- Serve over **HTTPS** and set `SESSION_COOKIE_SECURE=True`. The session signing key is generated once and kept in the database (`SECRET_KEY` overrides it).
 - State-changing requests are CSRF-protected (per-session token). Cookies are `HttpOnly` and `SameSite=Lax`.
-- Never commit `.env`. Rotate the client secret before it expires.
-- Use a production WSGI server rather than the Flask development server.
+- Never commit `.env` or `instance/`. Rotate the client secret before it expires.
+- Use a production WSGI server (the Docker image runs Gunicorn with `broom365.wsgi:application`) rather than the Flask development server.
 - Only one sync job runs at a time, in-process. Multiple workers would need an external lock.
 
 ## Project layout
 
 ```
+run.py               development entry point (flask --app run run); production uses broom365/wsgi.py
 broom365/
   __init__.py        app factory
-  config.py          env + default thresholds and scope list
-  db.py              SQLite helpers
+  wsgi.py            production entry point: the installer first, the application once configured
+  bootstrap.py       the installer's saved settings (bootstrap.json), the encryption key, the database URL builder
+  installer/         the installer pages (database, key, admin password, Test connection)
+  connect/           the step after sign-in: Microsoft 365 connection and permission check
+  config.py          optional environment values + default thresholds and scope list
+  database.py        SQLite or SQL Server connections (ODBC string, SQL translation)
+  db.py              per-request connection, schema, settings store
+  runtime.py         the Microsoft 365 connection in effect
   security.py        CSRF
   templating.py      Jinja filters
   demo.py            synthetic tenant (BROOM_DEMO=1)
-  auth/              MSAL flow, preflight, token provider for background jobs
-  dashboard/ groups/ apps/ users/ settings/ export/    blueprints (routes only)
+  auth/              accounts sign-in, MSAL, preflight, token provider for background jobs
+  dashboard/ groups/ apps/ users/ settings/ accounts/ export/    blueprints (routes only)
   models/            schema.sql, domain dataclasses (types.py)
   services/
     graph.py         typed Graph helpers, paging, 429/5xx backoff
+    exchange.py      read-only Exchange Online client
     sync.py          inventory and scan, signal availability
     scope.py         pattern matching (pure)
     correlate.py     group flags + risk (pure)
-    extended_signals.py   app/user/privileged signals + correlations (pure)
+    extended_signals.py, intune.py, updates.py, guests.py, members.py, exchange_*.py   the checks (pure)
     permissions.py   scope preflight (pure)
-    repository.py    SQLite <-> domain types, flag persistence
+    accounts.py, appconfig.py    Broom365 accounts; the Microsoft 365 connection and its encryption
+    repository.py    database <-> domain types, flag persistence
     sync_runner.py   background job runner
   templates/ static/
 tests/               unit tests with fixtures; page tests against demo data
@@ -560,9 +571,9 @@ schema refactor.
 
 Broom365 is meant for an internal network. It holds tenant-wide read access to your Microsoft 365 tenant, so treat the server like any other admin tool.
 
-- The first account is `admin` with an **empty password**; you must set one before anything else works. Do this right after the first start, and do not expose a fresh instance to an untrusted network.
+- The installer is open to whoever can reach the port until it is finished, and it sets the `admin` password: install right after starting, and do not expose a fresh instance to an untrusted network.
 - Passwords are the only factor (no MFA). Put it behind HTTPS and your own network controls (VPN, reverse proxy with SSO, IP allow-list).
-- Set `BROOM_KEY` so the Entra client secret is encrypted in the database; without it the secret is stored as plain text and Settings warns about it.
+- The Entra client secret is encrypted in the database with the key chosen in the installer, which is kept in `instance/bootstrap.json` (readable only by the app's user). Keep a copy of the key; without it the secret has to be entered again.
 - Give the Entra app registration only the **read** permissions listed above. Broom365 never writes to the tenant.
 - No tenant data, credentials or session files belong in a clone of this repository: `.env` and `instance/` are ignored by git and by the Docker build.
 

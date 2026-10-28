@@ -1,35 +1,27 @@
-# Broom365 as one container.
+# Broom365 as one container, for trying it out or developing.
 #
-#   docker compose up --build        ->  http://localhost:5000   (sign in as admin with an empty password, then set one)
+#   docker compose up --build        ->  http://localhost:5000
 #
-# Open the page and the installer asks where the data goes (SQL Server or SQLite), for the key and the admin password; its settings and
-# a SQLite file live in the `broom-data` volume. DATABASE_URL and BROOM_KEY (in .env) are optional and win over what the installer saved.
+# The page opens the installer: it asks where the data goes (SQL Server or SQLite), for an encryption key and the admin password. What it
+# saves, and a SQLite file if you choose one, live in the `broom-data` volume.
 #
-# For a throw-away SQL Server while developing, enable the optional `mssql` profile and point DATABASE_URL at it:
-#   MSSQL_SA_PASSWORD=...  DATABASE_URL="mssql+pyodbc://sa:...@mssql:1433/broom365?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
-#   docker compose --profile mssql up --build
+# To try SQL Server without having one, start the optional throw-away server too, then use these values in the installer:
+# server `mssql`, port 1433, database `broom365`, user `sa` and the password you set here:
 #
-# Images: BASE_IMAGE (Python + ODBC driver; the Dockerfile installs the driver when the base lacks it) and MSSQL_IMAGE can be
-# pointed at your own registry (see .env.example.docker).
+#   MSSQL_SA_PASSWORD='Choose-a-Str0ng-one!' docker compose --profile mssql up --build
 services:
   broom365:
-    build:
-      context: .
-      args:
-        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim-bookworm}
-    image: ${BROOM_IMAGE:-broom365:latest}
+    build: .
+    image: broom365:latest
     ports:
       - "5000:5000"
-    environment:
-      DATABASE_URL: ${DATABASE_URL:-}
-      BROOM_KEY: ${BROOM_KEY:-}
     volumes:
       - broom-data:/app/instance
     restart: unless-stopped
 
   mssql:
     profiles: ["mssql"]
-    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
+    image: mcr.microsoft.com/mssql/server:2022-latest
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-}
@@ -41,10 +33,10 @@ services:
       timeout: 5s
       retries: 20
 
-  # Creates the empty database once; Broom365 creates its tables on start.
+  # Creates the empty database once; Broom365 creates its tables when you install.
   mssql-init:
     profiles: ["mssql"]
-    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
+    image: mcr.microsoft.com/mssql/server:2022-latest
     depends_on:
       mssql:
         condition: service_healthy

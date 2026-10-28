@@ -268,3 +268,23 @@ def test_the_test_button_also_checks_that_the_sqlite_folder_can_be_written(home)
     d = c.post("/test", data={"storage": "sqlite"}, headers={"X-CSRF-Token": token(c)}).get_json()
     assert d["ok"] is True and "can be written" in d["message"] and not bootstrap.path().exists()
     assert 'id="test"' in c.get("/").get_data(as_text=True)
+
+
+def test_demo_mode_opens_the_demo_and_never_the_installer(home, monkeypatch):
+    monkeypatch.setenv("BROOM_DEMO", "1")
+    c = Client(Switch(), Response)
+    html = c.get("/").get_data(as_text=True)
+    assert "Demo data" in html and "<h2>Install</h2>" not in html
+
+
+def test_the_settings_page_describes_the_installer_key_and_not_an_environment_variable(admin, cfg, monkeypatch):
+    monkeypatch.delenv("BROOM_KEY", raising=False)
+    bootstrap.use_key("")
+    connect(admin)
+    assert "no encryption key is set" in admin.get("/settings").get_data(as_text=True)
+    bootstrap.use_key("installer-key-installer-key")
+    try:
+        connect(admin)
+        assert "chosen in the installer" in admin.get("/settings").get_data(as_text=True)
+    finally:
+        bootstrap.use_key("")

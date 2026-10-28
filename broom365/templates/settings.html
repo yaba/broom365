@@ -38,9 +38,9 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <h3 style="margin:0 0 6px">Entra app connection</h3>
     <p class="muted small">The app registration Broom365 reads the tenant with. It is stored in the database
-      {% if encrypted %}and the client secret is encrypted with <code>BROOM_KEY</code>.{% else %}<strong>and the client secret is stored as plain text</strong>:
-      set the <code>BROOM_KEY</code> environment variable to encrypt it.{% endif %}</p>
-    {% if creds.secret_unreadable %}<p class="st-bad">The stored client secret cannot be decrypted (BROOM_KEY is missing or changed). Enter it again.</p>{% endif %}
+      {% if encrypted %}and the client secret is encrypted with the encryption key chosen in the installer.{% else %}<strong>and the client secret is stored as plain text</strong>,
+      because no encryption key is set (the installer sets one; otherwise set the <code>BROOM_KEY</code> environment variable).{% endif %}</p>
+    {% if creds.secret_unreadable %}<p class="st-bad">The stored client secret cannot be decrypted (the encryption key is missing or changed). Enter it again.</p>{% endif %}
     <p><label>Tenant ID<br><input name="tenant_id" value="{{ creds.tenant_id }}" required size="46" autocomplete="off"></label></p>
     <p><label>Client ID<br><input name="client_id" value="{{ creds.client_id }}" required size="46" autocomplete="off"></label></p>
     <p><label>Client secret<br><input type="password" name="client_secret" size="46" autocomplete="new-password"
@@ -70,7 +70,7 @@
       {{ validation.granted | length }} {{ validation.perm_type | lower }} permission(s) in the token.</p>
     {% if validation.token_error %}
       <div class="notice"><strong>No token could be obtained:</strong> {{ validation.token_error }}<br>
-        Check <code>TENANT_ID</code>, <code>CLIENT_ID</code> and <code>CLIENT_SECRET</code> (the secret's Value, not expired).</div>
+        Check the tenant ID, client ID and client secret above (the secret's Value, and not expired).</div>
     {% else %}
       {% if validation.missing %}
         <div class="notice" role="alert"><strong>Add these {{ validation.perm_type }} permissions (Microsoft Graph) and grant admin consent:</strong>

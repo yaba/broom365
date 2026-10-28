@@ -1,4 +1,4 @@
-# Broom365: one container, Gunicorn, SQL Server through DATABASE_URL (SQLite when it is not set).
+# Broom365: one container, Gunicorn. The first start opens an installer (SQL Server or SQLite); nothing has to be configured here.
 #
 # The default base is a public Python image; the Microsoft ODBC Driver 18 for SQL Server is installed from Microsoft's
 # package repository when the base does not already have it. Building the image therefore accepts Microsoft's licence
@@ -29,7 +29,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY broom365 ./broom365
-COPY run.py .
+COPY run.py LICENSE ./
 
 # Sessions and the optional SQLite fallback live in /app/instance; the app runs as an unprivileged user.
 RUN useradd --system --no-create-home --uid 10001 broom \

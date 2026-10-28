@@ -1,4 +1,4 @@
-"""Database helpers: per-request connection, schema init, settings store. SQLite by default, SQL Server via DATABASE_URL."""
+"""Database helpers: per-request connection, schema init, settings store. SQLite or SQL Server, as chosen in the installer (or by DATABASE_URL)."""
 from __future__ import annotations
 
 import json

@@ -1,6 +1,7 @@
-"""Application configuration: environment values plus default thresholds.
+"""Application configuration: optional environment values plus default thresholds.
 
-Secrets come from the environment (.env). Thresholds and the high-risk scope list are
+Nothing has to be in the environment: the installer saves the database settings and the encryption key, and the Microsoft 365
+connection is kept in the database. Thresholds and the high-risk scope list are
 only *defaults* here; the user-editable values live in the `settings` table.
 """
 from __future__ import annotations
@@ -211,7 +212,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        """Load configuration from the process environment (after reading .env)."""
+        """Load configuration: the environment (after reading .env) first, then what the installer saved."""
         load_dotenv()
         from . import bootstrap   # the installer's file: used where the environment says nothing
         mode = os.environ.get("AUTH_MODE", "app").strip().lower()

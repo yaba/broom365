@@ -6,6 +6,7 @@ When the installer finishes, the real application is started in the same process
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any, Callable, Iterable
 
@@ -32,6 +33,8 @@ class Switch:
             return self._app
 
     def _build(self) -> Callable[..., Iterable[bytes]]:
+        if os.environ.get("BROOM_DEMO") == "1":
+            return create_app()
         if bootstrap.needs_setup():
             return create_setup_app(self.rebuild)
         try:
@@ -50,9 +53,7 @@ class Switch:
 application = Switch()
 
 
-if __name__ == "__main__":      # `python -m broom365.wsgi`: the same entry point with the development server
-    import os
-
+if __name__ == "__main__":      # `python -m broom365.wsgi`: the same entry point with the development server (HOST and PORT are optional)
     from werkzeug.serving import run_simple
 
     run_simple(os.environ.get("HOST", "127.0.0.1"), int(os.environ.get("PORT", "5000")), application, use_reloader=False)

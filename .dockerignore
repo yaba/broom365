@@ -7,3 +7,5 @@ __pycache__
 .pytest_cache
 tests
 README.md
+docker-compose*.yml
+.env.example

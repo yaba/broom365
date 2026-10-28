@@ -1,18 +1,18 @@
-# Broom365 in production: the image on its own, one volume. The database (SQL Server or SQLite) is chosen in the installer.
-# Paste it into a Portainer stack or run `docker compose -f docker-compose.prod.yml up -d`.
+# Broom365 in production: the image on its own and one volume. Paste it into a Portainer stack, or run
+# `docker compose -f docker-compose.prod.yml up -d`.
 #
-# The only variable you need is BROOM_IMAGE, the image to run (Portainer: "Environment variables" of the stack; plain compose: a .env file),
-# for example yourname/yourrepo:broom365-1.0 (log in to the registry first when it is private).
-# Open http://host:5000: the installer asks for the database (SQL Server or SQLite), the encryption key and the admin password. What it
-# saves lives in the volume below, so keep that volume.
-# Nothing else is needed. (DATABASE_URL and BROOM_KEY still work if you add them under `environment:`; see the README.)
+# Set one variable, BROOM_IMAGE, to the image you built or pulled (for example yourname/yourrepo:broom365-1.1.1; log in to the registry
+# first when it is private). Or replace `${BROOM_IMAGE:?...}` below with the image name.
+#
+# Then open http://host:5000: the installer asks for the database (SQL Server or SQLite), an encryption key and the admin password, and
+# what it saves lives in the volume. Keep that volume.
 services:
   broom365:
-    image: ${BROOM_IMAGE:?set BROOM_IMAGE}
+    image: ${BROOM_IMAGE:?set BROOM_IMAGE to the image to run}
     ports:
       - "5000:5000"
     volumes:
-      - broom-data:/app/instance     # the installer's settings (bootstrap.json), the sessions, and the SQLite file when chosen
+      - broom-data:/app/instance
     restart: unless-stopped
 
 volumes:
